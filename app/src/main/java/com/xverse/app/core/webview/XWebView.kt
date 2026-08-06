@@ -51,7 +51,6 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
         val s = settings
         s.javaScriptEnabled = true
         s.domStorageEnabled = true
-        s.databaseEnabled = true
         s.loadWithOverviewMode = true
         s.useWideViewPort = true
         s.setSupportZoom(false)

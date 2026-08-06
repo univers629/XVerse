@@ -13,8 +13,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
@@ -139,10 +139,10 @@ private fun TopBar(viewModel: BrowserViewModel, loggedIn: Boolean) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = { viewModel.goBack() }) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = "后退")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "后退")
             }
             IconButton(onClick = { viewModel.goForward() }) {
-                Icon(Icons.Filled.ArrowForward, contentDescription = "前进")
+                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "前进")
             }
             IconButton(onClick = { viewModel.reload() }) {
                 Icon(Icons.Filled.Refresh, contentDescription = "刷新")

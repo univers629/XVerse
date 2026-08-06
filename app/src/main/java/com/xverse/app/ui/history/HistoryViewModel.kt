@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.xverse.app.AppInstance
 import com.xverse.app.core.data.db.HistoryRecord
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
@@ -19,6 +20,7 @@ class HistoryViewModel : ViewModel() {
 
     val query = MutableStateFlow("")
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     private val source = query.flatMapLatest { q ->
         if (q.isBlank()) locator.historyRepo.observeAll()
         else locator.historyRepo.search(q)

@@ -1,6 +1,8 @@
 # Gradle
 .gradle/
 build/
+# AGP 9 / Android Studio 的 release 产物目录（APK + baselineProfiles + output-metadata）
+app/release/
 !gradle/wrapper/gradle-wrapper.jar
 # Android Studio / Gradle 自动生成的本地 daemon JVM 工具链配置
 gradle/gradle-daemon-jvm.properties
