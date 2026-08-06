@@ -1,0 +1,36 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+# Android Studio / Gradle 自动生成的本地 daemon JVM 工具链配置
+gradle/gradle-daemon-jvm.properties
+
+# Android
+/local.properties
+/captures
+.externalNativeBuild
+.cxx
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Kotlin
+.kotlin/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# 本地调试截图（不入库）
+*.png
+!app/src/main/res/**/*.png

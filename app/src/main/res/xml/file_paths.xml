@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 可暴露路径：应用外部私有目录 Movies/XVerse（默认下载目录）及 files 目录 -->
+<paths>
+    <external-files-path name="xverse_downloads" path="Movies/XVerse/" />
+    <files-path name="xverse_internal" path="." />
+</paths>

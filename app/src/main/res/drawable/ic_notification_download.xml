@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 下载通知小图标：蓝色圆底 + 白色下载箭头 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#1D9BF0"
+        android:pathData="M12,2 a10,10 0 1,0 0,20 a10,10 0 1,0 0,-20" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,6 v6.5 l2.5,-2.5 1.4,1.4 -4.9,4.9 -4.9,-4.9 1.4,-1.4 2.5,2.5 v-6.5 z" />
+</vector>
