@@ -16,6 +16,7 @@ gradle/gradle-daemon-jvm.properties
 *.aab
 *.keystore
 *.jks
+*.hprof
 
 # Kotlin
 .kotlin/
@@ -36,6 +37,7 @@ gradle/gradle-daemon-jvm.properties
 # 本地调试截图（不入库）
 *.png
 !app/src/main/res/**/*.png
+!docs/*.png
 
 # 本地测试探针（CDP/UI 验证脚本、测试 crx 包、测试 DB 快照）
 # 仅开发期使用，不入库；保留在磁盘上供后续测试复用

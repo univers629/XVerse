@@ -41,7 +41,9 @@ import okhttp3.Request
  */
 @Composable
 fun NetworkThumb(url: String, modifier: Modifier = Modifier, thumbPath: String = "") {
-    val isVideo = url.contains(".mp4", ignoreCase = true)
+    // 有本地缩略图时按图显示（无论 mediaUrl 是否 .mp4 —— 存量坏数据 mediaUrl 可能是 mp4 直链，
+    // 但本地 thumbPath 已是海报帧 jpg，应显示图片而非影片图标）
+    val isVideo = !thumbPath.isNotBlank() && url.contains(".mp4", ignoreCase = true)
     // 缓存键：本地缩略图路径优先，否则网络直链
     val cacheKey = if (thumbPath.isNotBlank()) thumbPath else url
     // 组合期同步命中内存缓存 → 切 Tab 回来第一帧即出图，无占位闪烁

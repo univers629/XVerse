@@ -22,6 +22,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -138,11 +139,20 @@ private fun HistoryRow(
                     .weight(1f)
                     .padding(start = if (thumb.isNotBlank()) 10.dp else 0.dp),
             ) {
+                val author = buildString {
+                    if (record.displayName.isNotBlank()) {
+                        append(record.displayName)
+                        append(' ')
+                    }
+                    append('@')
+                    append(record.username.ifBlank { "未知用户" })
+                }
                 Text(
-                    text = if (record.displayName.isNotBlank()) record.displayName else "@${record.username.ifBlank { "未知用户" }}",
+                    text = author,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 if (record.textPreview.isNotBlank()) {
                     Text(

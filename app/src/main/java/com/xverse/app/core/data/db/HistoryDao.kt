@@ -22,9 +22,6 @@ interface HistoryDao {
     @Delete
     suspend fun delete(record: HistoryRecord)
 
-    @Query("DELETE FROM history WHERE id = :id")
-    suspend fun deleteById(id: Long)
-
     @Query("DELETE FROM history")
     suspend fun clearAll()
 
@@ -38,6 +35,16 @@ interface HistoryDao {
     @Query("DELETE FROM history WHERE id IN (SELECT id FROM history ORDER BY visitedAt DESC LIMIT -1 OFFSET :keep)")
     suspend fun trimTo(keep: Int): Int
 
-    @Query("SELECT * FROM history WHERE url = :url LIMIT 1")
-    suspend fun findByUrl(url: String): HistoryRecord?
+    /** 清理历史遗留：同一 tweetId 的小写 mediaviewer 孤儿记录（空正文、无有效媒体缩略图） */
+    @Query("""
+        DELETE FROM history WHERE id IN (
+            SELECT h.id FROM history h
+            WHERE lower(h.url) LIKE '%/mediaviewer%'
+              AND h.textPreview = ''
+              AND h.mediaUrl NOT LIKE '%/media/%'
+            GROUP BY h.tweetId
+            HAVING COUNT(*) = 1
+        )
+    """)
+    suspend fun deleteOrphanMediaviewer(): Int
 }

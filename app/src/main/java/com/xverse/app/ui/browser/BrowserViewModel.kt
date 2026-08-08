@@ -22,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
+import java.io.File
 
 /**
  * 浏览器页 ViewModel：持有 XWebView 引用，管理历史写入、注入、登录状态。
@@ -125,7 +126,10 @@ class BrowserViewModel : ViewModel() {
             val text = payload.optString("text")
             val displayName = payload.optString("name")
             val mediaUrl = payload.optString("mediaUrl")
-            if (url.isNotEmpty()) writeHistory(url, text, displayName, mediaUrl)
+            // 竖屏滑动记录（fromMedia=true）：mediaViewer 无 tweetText/article，
+            // 跳过读页面 DOM 兜底（否则取到别的帖子的海报/正文，张冠李戴）
+            val fromMedia = payload.optBoolean("fromMedia")
+            if (url.isNotEmpty()) writeHistory(url, text, displayName, mediaUrl, fromMedia = fromMedia)
         }
         // Bridge：GraphQL TweetDetail 响应 → 原生缓存媒体（按推文 id 隔离，避免串帖）
         bridge.register("mediaResponse") { payload, _ ->
@@ -147,13 +151,26 @@ class BrowserViewModel : ViewModel() {
         // 初始注册由 loadInitial 在首导航前完成（必须早于 onPageStarted，否则首屏 SPA 不生效）；
         // 这里只挂规则变更热更新。
         watchFilterRules()
+        // 一次性清理历史遗留：修复前的小写 mediaviewer 孤儿记录（进入媒体贴会产生
+        // 「点击路径干净 URL + onPageFinished 停留路径 mediaviewer URL」的重复历史）。
+        viewModelScope.launch {
+            val removed = locator.historyRepo.deleteOrphanMediaviewer()
+            if (removed > 0) {
+                com.xverse.app.core.log.LogStore.log(
+                    com.xverse.app.core.log.LogCategory.HISTORY,
+                    "清理 mediaviewer 重复历史 $removed 条",
+                )
+            }
+        }
 
         view.onProgress = { progress.value = it }
         view.onPageFinished = { pageUrl ->
             this.url.value = pageUrl
             refreshLoginState()
-            // 推文 URL：启动 3s 停留计时
-            if (pageUrl.contains("/status/")) {
+            // 推文 URL：启动 3s 停留计时。排除竖屏 mediaViewer——入口视频已由点击路径
+            // （HISTORY_TRACKING_SCRIPT click handler）记录带完整正文；这里再写空正文的
+            // mediaViewer 记录会与点击记录并存产生重复历史（且归一化后 REPLACE 会覆盖正文）。
+            if (pageUrl.contains("/status/") && !pageUrl.contains("/mediaviewer", ignoreCase = true)) {
                 scheduleHistoryWrite(pageUrl)
             }
         }
@@ -263,6 +280,9 @@ class BrowserViewModel : ViewModel() {
                 return true
             }
             val rules = locator.filterRepo.getEnabled()
+            val mode = locator.settings.filterMode.first()
+            val ccVideos = locator.settings.filterCcVideos.first()
+            val aiLabel = locator.settings.filterAiLabel.first()
             // FilterScript 需要 context；AppInstance.locator 内部持有 appContext
             val fs = com.xverse.app.core.webview.FilterScript(locator.appContext)
             if (reInject) {
@@ -274,16 +294,11 @@ class BrowserViewModel : ViewModel() {
                 LogStore.log(LogCategory.FILTER, "过滤规则已热更新：x${rules.size}")
                 return true
             }
-            fs.buildEarlyScripts(rules).forEach { view.injector.addEarly(it) }
-            // Redux 拦截层会改写 React 内部状态，x.com 改版时易引发整页重渲染/反复刷新，
-            // 仅当用户显式配置了 STORE 规则时才注入（默认关，CSS + Mutation 两层已够用）。
-            val hasStoreRules = rules.any { it.type == com.xverse.app.core.data.db.RuleType.STORE }
-            if (hasStoreRules) {
-                fs.reduxScript()?.let { view.injector.addEarly(it) }
-            } else {
-                LogStore.log(LogCategory.FILTER, "无 STORE 规则，跳过 Redux 拦截层")
-            }
-            LogStore.log(LogCategory.FILTER, "过滤脚本就绪：内置 + 用户规则 x${rules.size}")
+            fs.buildEarlyScripts(rules, mode, ccVideos, aiLabel).forEach { view.injector.addEarly(it) }
+            LogStore.log(
+                LogCategory.FILTER,
+                "过滤脚本就绪（模式 $mode，CC 视频 ${if (ccVideos) "过滤" else "不过滤"}，AI 标签 ${if (aiLabel) "过滤" else "不过滤"}）：内置 + 用户规则 x${rules.size}"
+            )
             true
         } catch (e: Exception) {
             LogStore.error("加载过滤脚本失败", e)
@@ -318,53 +333,53 @@ class BrowserViewModel : ViewModel() {
         loadUrl(Constants.LOGIN_URL)
     }
 
-    /** 已登录点击徽章：确认后登出 */
-    fun confirmLogout(context: android.content.Context) {
-        val activity = context as? android.app.Activity
-        val dialog = android.app.AlertDialog.Builder(activity ?: return)
-            .setTitle("登出")
-            .setMessage("确定要退出登录吗？将清除 x.com 的登录 Cookie。")
-            .setPositiveButton("登出") { _, _ ->
-                locator.authController.logout(webView)
-                refreshLoginState()
-            }
-            .setNegativeButton("取消", null)
-            .create()
-        dialog.show()
+    /** 登出（确认弹窗在 UI 层，见 BrowserScreen） */
+    fun logout() {
+        locator.authController.logout(webView)
+        refreshLoginState()
     }
 
     private fun scheduleHistoryWrite(url: String) {
         historyJob?.cancel()
         historyJob = viewModelScope.launch {
-            delay(3000)
+            delay(1500)
             writeHistory(url, "", "", "")
         }
     }
 
     /**
-     * 停留超 3s / 点击详情时写入历史。
+     * 停留超 1.5s / 点击详情时写入历史。
      * [text]/[displayName]/[mediaUrl] 由页面 JS 从 DOM 提取后经 Bridge 上报。
      *
      * 缩略图时序：点击详情立即写入时，GraphQL 拦截脚本可能尚未把媒体缓存上报原生
      * （缓存晚几百 ms 就绪），此时 cachedThumbnail 为空。若直接落库，历史页将长期
      * 显示无缩略图记录。这里在 mediaUrl 为空时延迟重试：等缓存就绪后补写同一记录。
      */
-    fun writeHistory(url: String, text: String = "", displayName: String = "", mediaUrl: String = "") {
+    fun writeHistory(url: String, text: String = "", displayName: String = "", mediaUrl: String = "", fromMedia: Boolean = false) {
         viewModelScope.launch {
-            // URL 归一化：/photo/N、/video/N 子页一律指向帖子整页（历史点击回到帖子页而非放大图）
-            val norm = url.replace(Regex("/photo/\\d+$"), "").replace(Regex("/video/\\d+$"), "")
+            // URL 归一化：/photo/N、/video/N、/mediaViewer 子页一律指向帖子整页（历史点击回到帖子页而非放大图）。
+            // mediaViewer 的 ?currentTweet= 查询参数是当前刷到的视频，路径 /status/<id> 仍是入口帖子。
+            // IGNORE_CASE：x.com 实际用小写 /mediaviewer，大小写敏感会把两条 URL 当不同记录写入，
+            // 产生「点击路径干净 URL + onPageFinished 停留路径 mediaviewer URL」的重复历史。
+            val norm = url
+                .replace(Regex("/photo/\\d+$"), "")
+                .replace(Regex("/video/\\d+$"), "")
+                .replace(Regex("/mediaviewer.*$", RegexOption.IGNORE_CASE), "")
             val parsed = HistoryRepo.parseTweetUrl(norm) ?: return@launch
             val (username, tweetId) = parsed
             val enabled = locator.settings.historyEnabled.first()
             if (!enabled) return@launch
-            // 页面 JS 未上报标题时（非详情点击路径），主动回读页面
+            // 页面 JS 未上报标题时（非详情点击路径），主动回读页面。
+            // 竖屏滑动记录（fromMedia=true）跳过：mediaViewer 无 tweetText/article，
+            // 回读会取到别的帖子的海报/正文（张冠李戴，快速滑动连续同图的根源）。
             var t = text
             var name = displayName
             var mUrl = mediaUrl
-            if (t.isBlank() && mUrl.isBlank()) {
+            if (!fromMedia && t.isBlank() && mUrl.isBlank()) {
                 val meta = queryPageForMetadata()
                 t = meta.first
-                mUrl = meta.second
+                name = meta.second
+                mUrl = meta.third
             }
             // 视频帖：DOM 提取常拿不到海报帧（可能在 <video poster> 属性 / mediaViewer 结构差异），
             // 兜底复用 GraphQL 缓存的缩略图（下载链路已验证拿到 ext_tw_video_thumb 海报）
@@ -415,9 +430,9 @@ class BrowserViewModel : ViewModel() {
         }
     }
 
-    /** 主线程 evaluateJavascript 读页面元数据（tweetText 摘要 + 媒体缩略图），返回 (text, mediaUrl) */
-    private suspend fun queryPageForMetadata(): Pair<String, String> {
-        val wv = webView ?: return "" to ""
+    /** 主线程 evaluateJavascript 读页面元数据（tweetText 摘要 + 昵称 + 媒体缩略图），返回 (text, name, mediaUrl) */
+    private suspend fun queryPageForMetadata(): Triple<String, String, String> {
+        val wv = webView ?: return Triple("", "", "")
         return withContext(kotlinx.coroutines.Dispatchers.Main) {
             kotlinx.coroutines.suspendCancellableCoroutine { cont ->
                 wv.evaluateJavascript(META_READER_SCRIPT) { r ->
@@ -430,7 +445,7 @@ class BrowserViewModel : ViewModel() {
                     } catch (_: Exception) {
                         org.json.JSONObject()
                     }
-                    cont.resume(json.optString("text") to json.optString("mediaUrl"))
+                    cont.resume(Triple(json.optString("text"), json.optString("name"), json.optString("mediaUrl")))
                 }
             }
         }
@@ -566,6 +581,9 @@ class BrowserViewModel : ViewModel() {
 
     override fun onCleared() {
         historyJob?.cancel()
+        // 释放 WebView 强引用（实际销毁由 Compose AndroidView 解组时负责），
+        // 避免 ViewModel 存活期间强持 WebView/JS 上下文
+        webView = null
         super.onCleared()
     }
 
@@ -584,6 +602,53 @@ class BrowserViewModel : ViewModel() {
             "探针模式 ${if (on) "开" else "关"}：${if (on) "零注入对照" else "恢复正常注入"}",
         )
         rebuildWebView()
+    }
+
+    /**
+     * 过滤方式切换后重建注入：清注入列表 + 重新挂全量脚本 + reload 首页。
+     * addEarly 列表只增不减，普通 reload 不会更新注入组合（strip 脚本残留/缺失），
+     * 必须走重建路径让下一整页加载按新模式注入。
+     */
+    fun reapplyInjections() {
+        LogStore.log(LogCategory.FILTER, "过滤方式变更：重建注入 + reload 首页")
+        rebuildWebView()
+    }
+
+    /**
+     * 过滤带字幕（CC）视频开关热更新：只改页面内标记 __xvFilterCc，
+     * 检测逻辑在已注入的 mutation 脚本内、运行时读标记 → 无需重建注入/reload 首页。
+     * 关闭时同时调 __xvFilterCard.revealCc() 恢复已隐藏的 CC 帖（只动 CC 标记，不碰广告帖）。
+     * （开关需在设置页改完后回调，否则先读库再 evaluate 读到旧值。）
+     */
+    fun applyCcFilterSetting(on: Boolean) {
+        val wv = webView ?: return
+        val js = if (on) {
+            "window.__xvFilterCc = true;"
+        } else {
+            "window.__xvFilterCc = false;" +
+                "if (window.__xvFilterCard && window.__xvFilterCard.revealCc)" +
+                " window.__xvFilterCard.revealCc();"
+        }
+        wv.injector.evaluate(js)
+        LogStore.log(LogCategory.FILTER, "CC 视频过滤 ${if (on) "开" else "关"}（热更新标记，不重载）")
+    }
+
+    /**
+     * 过滤 AI 生成标签（Made with AI）开关热更新：只改页面内标记 __xvFilterAi，
+     * 检测逻辑在已注入的 mutation 脚本内（scan 轮询）、运行时读标记 → 无需重建注入/reload。
+     * 关闭时同时调 __xvFilterCard.revealAi() 恢复已隐藏的 AI 帖（只动 AI 标记，不碰广告帖）。
+     */
+    fun applyAiFilterSetting(on: Boolean) {
+        val wv = webView ?: return
+        val js = if (on) {
+            "window.__xvFilterAi = true;"
+        } else {
+            "window.__xvFilterAi = false;" +
+                "if (window.__xvFilterCard && window.__xvFilterCard.revealAi)" +
+                " window.__xvFilterCard.revealAi();"
+        }
+        wv.injector.evaluate(js)
+        LogStore.log(LogCategory.FILTER, "AI 标签过滤 ${if (on) "开" else "关"}（热更新标记，不重载）")
     }
 
     companion object {
@@ -781,9 +846,11 @@ class BrowserViewModel : ViewModel() {
          */
         private val HISTORY_TRACKING_SCRIPT = """
             // 历史记录：点击推文详情/媒体链接时上报原生
-            // URL 归一化：photo/N、video/N 等媒体子页一律指向帖子整页（历史点击回到帖子页，而非放大图）
+            // URL 归一化：photo/N、video/N、mediaViewer 等媒体子页一律指向帖子整页（历史点击回到帖子页，而非放大图）。
+            // 大小写不敏感：x.com 实际生成 /mediaviewer（小写），与原生 writeHistory 的归一化保持一致，
+            // 避免「点击路径记整页 URL + onPageFinished 停留路径记 mediaviewer URL」双写去重失败。
             function xvNorm(h) {
-              return (h || '').replace(/\/photo\/\d+$/, '').replace(/\/video\/\d+$/, '');
+              return (h || '').replace(/\/photo\/\d+$/i, '').replace(/\/video\/\d+$/i, '').replace(/\/mediaviewer.*$/i, '');
             }
             // 元数据从被点击链接所在的 article 提取：
             // 时间线上 querySelector('article') 会取到页面第一个帖子，与点中的那条张冠李戴，
@@ -797,17 +864,20 @@ class BrowserViewModel : ViewModel() {
                 t = text ? text.innerText.trim().slice(0, 200) : '';
                 var nameEl = art.querySelector('[data-testid="User-Name"]');
                 n = nameEl ? nameEl.innerText.split(String.fromCharCode(10))[0].trim() : '';
-                // 预览图：优先帖子图片直链；视频帖取海报帧（ext_tw_video_thumb / amplify_video_thumb，非 /media/）
+                // 预览图：优先帖子图片直链；视频帖取海报帧（ext_tw_video_thumb / amplify_video_thumb，非 /media/）；
+                // GIF 帖取 tweet_video_thumb 海报帧（pbs.twimg.com jpg）。video 无 src 只有 poster，先取 poster。
+                // 过滤 video.twimg.com 的 mp4 直链（GIF 视频本体，非缩略图）。
                 var img = art.querySelector('img[src*="pbs.twimg.com/media/"]');
                 if (!img || !img.src) {
-                  var vp = art.querySelector('img[src*="ext_tw_video_thumb/"], img[src*="amplify_video_thumb/"]');
+                  var vp = art.querySelector('img[src*="ext_tw_video_thumb/"], img[src*="amplify_video_thumb/"], img[src*="tweet_video_thumb/"]');
                   img = vp || null;
                 }
                 if ((!img || !img.src) && art.querySelector('video[poster]')) {
                   img = art.querySelector('video[poster]');
                 }
-                if (img && (img.src || img.poster)) {
-                  m = (img.src || img.poster).split('?')[0] + '?format=jpg&name=small';
+                if (img && (img.poster || img.src)) {
+                  var base2 = (img.poster || img.src).split('?')[0];
+                  if (base2.indexOf('/video.twimg.com/') < 0) m = base2 + '?format=jpg&name=small';
                 }
               }
               return {text:t, name:n, mediaUrl:m};
@@ -817,14 +887,14 @@ class BrowserViewModel : ViewModel() {
               if (!a) {
                 // 兜底：点击帖子卡片主体（正文）进入详情。
                 // x.com 首页正文是独立 div 不在 <a> 内，只有图片/视频/时间戳是链接；
-                // 点正文 SPA 路由跳转、整页不重载，onPageFinished 的 3s 停留不触发，
+                // 点正文 SPA 路由跳转、整页不重载，onPageFinished 的 1.5s 停留不触发，
                 // 只能在此补记录。排除 action 栏（不导航）与用户主页/hashtag 导航，避免误记。
                 var art = e.target && e.target.closest ? e.target.closest('article[data-testid="tweet"]') : null;
                 if (!art) return;
                 if (e.target.closest('[data-testid="caret"],[data-testid="share"],[data-testid^="reply"],[data-testid^="retweet"],[data-testid^="like"],[data-testid^="bookmark"]')) return;
                 // 点击落在链接上但非帖子详情（用户主页/hashtag/外部/analytics）→ 不记
                 var cl = e.target.closest('a');
-                if (cl && !/\/status\/\d+$/.test(cl.getAttribute('href') || '')) return;
+                if (cl && !/\/status\/\d+$/i.test(cl.getAttribute('href') || '')) return;
                 // 取文章内帖子链接（排除 analytics）作为记录 URL
                 var sl = art.querySelector('a[href*="/status/"]:not([href*="/analytics"])');
                 if (sl && window.XVerseNative) {
@@ -850,28 +920,171 @@ class BrowserViewModel : ViewModel() {
                 }));
               }
             }, true);
+
+            // 竖屏刷视频模式：/status/<id>/mediaViewer?currentTweet=<id> 用 history.replaceState
+            // 切换视频（无点击、无 article 元素、无整页重载），上面的事件监听不会触发，
+            // 历史只记入口视频。这里 patch replaceState + 轮询 currentTweet 变化。
+            //
+            // 缩略图时序问题：滑动瞬间 video.poster 还是上一条视频的旧海报（React 尚未提交
+            // 新 DOM），此刻读「正在播放的视频」会连续几条同图。方案——
+            // 核心：mediaViewer 的每个 video 元素向上 15 层必带 cellInnerDiv-tweet-<id> 锚点，
+            // poster 与 tweetId 的归属由 DOM 结构决定，与播放状态 / currentTweet 竞态无关。
+            // 预加载又保证下一条视频的 poster 通常在切换前就已可读。
+            //  1. 每轮轮询扫描所有 video，建立 posterForTweet[tweetId] = poster 映射表；
+            //  2. 快速滑动离开时，延迟写先落历史（可能无图，原生按 tweetId 从 GraphQL
+            //     缓存补齐——mediaViewer 下缓存常空，只保记录）；
+            //  3. 已写但缺图的 tweetId，poster 一在映射表出现就带图重写（REPLACE 更新
+            //     缩略图，后台把缩略图存完——用户思路）。
+            // 入口视频已由点击/停留路径记录（带完整正文），只锚定不覆盖。
+            // 防重 guard：同一 JS 上下文可能被注入多份（reload 后旧实例未清理 +
+            // onPageFinished 重复触发），多实例会各跑 setInterval / 各 patch
+            // replaceState → 一次滑动双写历史。用 window 级标记保证同上下文
+            // 只有一份活跃 tracker，重复注入直接退出，杜绝多实例叠加。
+            if (window.__xvMediaTracker) return;
+            window.__xvMediaTracker = true;
+            var xvEntry = '';
+            var xvCurrent = '';
+            var xvSince = 0;
+            var xvUsers = {};
+            var xvPosters = {};
+            var xvWritten = {};   // 已调用过 recordHistory 的 tweetId（防重复写）
+            var xvPending = {};   // 已进入延迟写流程的 tweetId
+            var xvWithPoster = {}; // 已带 poster 写过的 tweetId（防重复带图重写）
+            // 扫 DOM 建立 tweetId → poster 映射：每个 video 元素向上找 cellInnerDiv-tweet-<id>
+            // 锚点拿到自己的 tweetId，poster 归属结构确定，不会张冠李戴。同一条 tweet 可能
+            // 有多个 video（多图/轮播），只记第一个。
+            function xvScanPosters() {
+              var vids = document.querySelectorAll('video');
+              for (var i = 0; i < vids.length; i++) {
+                var v = vids[i];
+                if (!v || !v.poster) continue;
+                var base = v.poster.split('?')[0];
+                if (!base) continue;
+                var tid = '';
+                var el = v;
+                for (var d = 0; d < 15 && el && !tid; d++) {
+                  var t = el.getAttribute && el.getAttribute('data-testid');
+                  if (t && t.indexOf('cellInnerDiv-tweet-') === 0) tid = t.slice('cellInnerDiv-tweet-'.length);
+                  el = el.parentElement;
+                }
+                if (tid && !xvPosters[tid]) {
+                  // poster 可能是 video.twimg.com 完整图（无需 format），或 pbs.twimg.com
+                  // amplify_video_thumb（需加 format=jpg&name=small 取缩略图）
+                  xvPosters[tid] = base.indexOf('/video.twimg.com/') < 0
+                    ? base + '?format=jpg&name=small' : base;
+                }
+              }
+            }
+            // 写一条历史：mediaUrl 用该条视频的 poster（映射表捕获）；没捕获到留空，
+            // 原生 writeHistory 按 tweetId 从 GraphQL 缓存补齐。fromMedia 标记告诉原生
+            // 这是竖屏滑动记录（mediaViewer 无 tweetText/article），跳过读页面 DOM——
+            // 否则 fallback 读到的第一个 article 海报会张冠李戴，连续几条同图。
+            // force 为 true 时允许带图重写（补上延迟出现的缩略图）；首次写记录置 xvWritten。
+            function xvWrite(tweetId, force) {
+              var u = xvUsers[tweetId];
+              if (!u || !window.XVerseNative) return;
+              if (xvWritten[tweetId] && !force) return;
+              xvWritten[tweetId] = true;
+              if (xvPosters[tweetId]) xvWithPoster[tweetId] = true;
+              var url = location.origin + '/' + u + '/status/' + tweetId;
+              XVerseNative.call('recordHistory', JSON.stringify({
+                url: url, text: '', name: '', mediaUrl: xvPosters[tweetId] || '',
+                fromMedia: true
+              }));
+            }
+            // 离开一条视频：还没落库的话记 pending，延迟后补写（后台把缩略图存完）。
+            // 海报从映射表查——快速滑动时预加载视频的海报可能已在表中，即使当时还没
+            // 预载出来，也等最后一轮再查（xvScanPosters 持续建表），绝不用「当前播放」。
+            function xvLeave(tweetId) {
+              if (tweetId === xvEntry || xvPending[tweetId]) return;
+              xvPending[tweetId] = true;
+              setTimeout(function() {
+                // 写前刷新映射表：滑动后 poster 通常已就绪，让首次写就带图，
+                // 避免「无图写 + 后台补图重写」的双写（REPLACE 去重但会重复下载缩略图）
+                xvScanPosters();
+                // 首次写（无图也写，保证每条记录都有）；poster 已就绪则带图
+                xvWrite(tweetId, false);
+              }, 800);
+            }
+            var xvTrackMedia = function() {
+              xvScanPosters();
+              var p = new URLSearchParams(location.search);
+              var t = p.get('currentTweet');
+              if (!t) {
+                // 退出竖屏模式：最后一条还没落库的视频补写
+                if (xvCurrent && xvCurrent !== xvEntry) xvLeave(xvCurrent);
+                xvEntry = ''; xvCurrent = ''; xvUsers = {}; xvPosters = {}; xvWritten = {}; xvPending = {}; xvWithPoster = {};
+                return;
+              }
+              var user = p.get('currentTweetUser');
+              if (!user) {
+                var mU = location.pathname.match(/^\/([^\/]+)\//);
+                user = mU ? mU[1] : '';
+              }
+              if (user) xvUsers[t] = user;
+              if (!xvCurrent) {
+                // 首个检测 = 入口视频（点击路径已记录完整信息），只锚定不覆盖
+                xvCurrent = t; xvEntry = t; xvSince = Date.now(); return;
+              }
+              if (t !== xvCurrent) {
+                // 滑到下一条：上一条还没落库的话延迟补写（后台存缩略图）
+                var leaving = xvCurrent;
+                xvCurrent = t; xvSince = Date.now();
+                if (leaving !== xvEntry) xvLeave(leaving);
+                return;
+              }
+              // 稳定停留 ≥1s：此刻视口内播放的就是本条视频，poster 已在映射表 → 落库
+              if (Date.now() - xvSince >= 1000) {
+                if (xvPosters[t] && !xvWritten[t] && t !== xvEntry) xvWrite(t, false);
+              }
+              // 后台补图：已离开(pending)、已写过但当时没图、现在 poster 出现了 →
+              // 带图重写（REPLACE 更新缩略图，用户思路：划走后把缩略图存完）
+              var keys = Object.keys(xvPending);
+              for (var i = 0; i < keys.length; i++) {
+                var tid = keys[i];
+                if (xvPending[tid] && xvPosters[tid] && !xvWithPoster[tid]) xvWrite(tid, true);
+              }
+            };
+            try {
+              var xvHistoryPatch = history.replaceState.bind(history);
+              history.replaceState = function() { xvHistoryPatch.apply(this, arguments); xvTrackMedia(); };
+              var xvHistoryPush = history.pushState.bind(history);
+              history.pushState = function() { xvHistoryPush.apply(this, arguments); xvTrackMedia(); };
+            } catch (e) {}
+            // 兜底轮询：replaceState 补丁捕获不到的场景（如直接改 location）也能跟上
+            setInterval(xvTrackMedia, 400);
         """.trimIndent()
 
         /** 页面元数据读取（停留路径被动回读）：返回 JSON 字符串 */
         private val META_READER_SCRIPT = """
             (function(){
               var art = document.querySelector('article');
-              var t = '', m = '';
+              var t = '', n = '', m = '';
               if (art) {
                 var text = art.querySelector('[data-testid="tweetText"]');
                 t = text ? text.innerText.trim().slice(0, 200) : '';
-                // 预览图：优先帖子图片直链；视频帖取海报帧（ext_tw_video_thumb / amplify_video_thumb）
+                // 昵称：User-Name 内第一行（换行前）即显示名，与点击通道 xvMeta 一致
+                var nameEl = art.querySelector('[data-testid="User-Name"]');
+                n = nameEl ? nameEl.innerText.split(String.fromCharCode(10))[0].trim() : '';
+                // 预览图：优先帖子图片直链；视频帖取海报帧（ext_tw_video_thumb / amplify_video_thumb）；
+                // GIF 帖取 tweet_video_thumb 海报帧（pbs.twimg.com 的 jpg，非 video.twimg.com 的 mp4 直链）。
+                // video 元素无 src 属性、只有 poster（海报图），先取 poster；img 元素取 src。
+                // 过滤 video.twimg.com 的 mp4 直链：那是 GIF 视频本体，不是缩略图（拉了也白拉/解码失败）。
                 var img = art.querySelector('img[src*="pbs.twimg.com/media/"]');
                 if (!img || !img.src) {
-                  var vp = art.querySelector('img[src*="ext_tw_video_thumb/"], img[src*="amplify_video_thumb/"]');
+                  var vp = art.querySelector(
+                    'img[src*="ext_tw_video_thumb/"], img[src*="amplify_video_thumb/"], img[src*="tweet_video_thumb/"]');
                   img = vp || null;
                 }
                 if ((!img || !img.src) && art.querySelector('video[poster]')) {
                   img = art.querySelector('video[poster]');
                 }
-                if (img && (img.src || img.poster)) m = (img.src || img.poster).split('?')[0] + '?format=jpg&name=small';
+                if (img && (img.poster || img.src)) {
+                  var base = (img.poster || img.src).split('?')[0];
+                  if (base.indexOf('/video.twimg.com/') < 0) m = base + '?format=jpg&name=small';
+                }
               }
-              return JSON.stringify({text:t, mediaUrl:m});
+              return JSON.stringify({text:t, name:n, mediaUrl:m});
             })();
         """.trimIndent()
 

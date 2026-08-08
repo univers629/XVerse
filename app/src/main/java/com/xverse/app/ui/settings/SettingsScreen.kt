@@ -1,6 +1,5 @@
 package com.xverse.app.ui.settings
 
-import android.app.Activity
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +16,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -36,7 +37,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.xverse.app.AppInstance
 import com.xverse.app.CommandBus
@@ -91,7 +91,47 @@ fun SettingsScreen(
             scope.launch { settings.setFilterEnabled(it) }
         }
 
-        // 过滤规则列表
+        // 过滤方式：mask=占位+可点击验证 / strip=完全不加载广告
+        // 任一方向切换都会改变 document_start 注入组合（strip 是网络层拦截，无法热注入），
+        // 切换后重建注入 + reload 首页才生效。
+        val filterMode by settings.filterMode.collectAsState(initial = "mask")
+        if (filterEnabled) {
+            FilterModeDropdown(
+                selected = filterMode,
+                onSelect = { v ->
+                    scope.launch {
+                        settings.setFilterMode(v)
+                        CommandBus.push(com.xverse.app.BrowserCommand.ReapplyInjections)
+                    }
+                },
+            )
+        }
+
+        // 过滤带字幕（CC）视频：广告过滤子项。检测在 mutation 层播放器轮询内
+        // （video.textTracks.length > 0），开关只热更新页面标记 → 无需重建注入/reload。
+        val filterCcVideos by settings.filterCcVideos.collectAsState(initial = true)
+        if (filterEnabled) {
+            SwitchSetting("内置：过滤带字幕（CC）视频", filterCcVideos, subRow = true) { on ->
+                scope.launch {
+                    settings.setFilterCcVideos(on)
+                    CommandBus.push(com.xverse.app.BrowserCommand.SetCcFilter(on))
+                }
+            }
+        }
+
+        // 过滤 AI 生成标签（Made with AI）：广告过滤子项（CC 行下方）。
+        // 检测在 mutation 层 scan 内（叶子 span 精确匹配），开关热更新标记 → 无需重载。
+        val filterAiLabel by settings.filterAiLabel.collectAsState(initial = true)
+        if (filterEnabled) {
+            SwitchSetting("内置：过滤 AI 生成标签", filterAiLabel, subRow = true) { on ->
+                scope.launch {
+                    settings.setFilterAiLabel(on)
+                    CommandBus.push(com.xverse.app.BrowserCommand.SetAiFilter(on))
+                }
+            }
+        }
+
+        // 过滤规则列表：内置词开关 → 自定义屏蔽词
         FilterRulesSection()
 
         SectionTitle("下载")
@@ -126,7 +166,7 @@ fun SettingsScreen(
 
         SectionTitle("关于")
         Text(
-            text = "XVerse 0.2.0\n仅面向 x.com 网页版。纯增强壳，不代理流量。",
+            text = "XVerse 0.3.0\n仅面向 x.com 网页版。纯增强壳，不代理流量。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -171,26 +211,15 @@ private fun AccountSection() {
     val scope = rememberCoroutineScope()
     val locator = AppInstance.locator
     val isLoggedIn by locator.authController.loggedIn.collectAsState()
-    val context = LocalContext.current
+    var showLogoutConfirm by remember { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable {
-                val activity = context as? Activity
                 if (isLoggedIn) {
-                    // 已登录 → 确认登出
-                    android.app.AlertDialog.Builder(activity ?: return@clickable)
-                        .setTitle("登出")
-                        .setMessage("确定要退出登录吗？将清除 x.com 的登录 Cookie。")
-                        .setPositiveButton("登出") { _, _ ->
-                            scope.launch {
-                                // 清 Cookie（统一入口）
-                                locator.authController.logout(null)
-                            }
-                        }
-                        .setNegativeButton("取消", null)
-                        .show()
+                    // 已登录 → 确认登出（MD3 弹窗）
+                    showLogoutConfirm = true
                 } else {
                     // 未登录 → 切回首页并打开 WebView 内登录页
                     // 只发 LoadUrl：整页加载登录页，无需先 GoHome（避免抢占 WebView 竞态）
@@ -214,6 +243,30 @@ private fun AccountSection() {
             text = if (isLoggedIn) "点击登出" else "点击登录",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+
+    if (showLogoutConfirm) {
+        AlertDialog(
+            onDismissRequest = { showLogoutConfirm = false },
+            title = { Text("登出") },
+            text = { Text("确定要退出登录吗？将清除 x.com 的登录 Cookie。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLogoutConfirm = false
+                    scope.launch {
+                        // 清 Cookie（统一入口）
+                        locator.authController.logout(null)
+                    }
+                }) {
+                    Text("登出")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLogoutConfirm = false }) {
+                    Text("取消")
+                }
+            },
         )
     }
 }
@@ -293,25 +346,116 @@ private fun ThemeDropdown(selected: String, onSelect: (String) -> Unit) {
     }
 }
 
+/**
+ * 过滤方式下拉：mask=占位+可点击验证 / strip=完全不加载广告。
+ * strip 是 document_start 网络层拦截，无法热注入——切换到 strip 后自动重载当前页生效。
+ * 视觉与颜色模式下拉一致（左侧标签 + 右侧按钮）。
+ */
 @Composable
-private fun SwitchSetting(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+private fun FilterModeDropdown(selected: String, onSelect: (String) -> Unit) {
+    val options = listOf(
+        "mask" to "占位 + 可点击验证",
+        "strip" to "完全不加载广告",
+    )
+    val label = options.firstOrNull { it.first == selected }?.second ?: "占位 + 可点击验证"
+    var expanded by remember { mutableStateOf(false) }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text = label, modifier = Modifier.weight(1f))
+        Text(
+            text = "过滤方式",
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Box {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { expanded = true }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Icon(
+                    Icons.Filled.ArrowDropDown,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+            ) {
+                options.forEach { (value, text) ->
+                    DropdownMenuItem(
+                        text = { Text(text) },
+                        onClick = {
+                            expanded = false
+                            onSelect(value)
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 设置开关行。普通行 bodyMedium；[subRow] 子行（CC/AI 等广告过滤子项）与内置屏蔽词行一致：bodySmall 小字 + 相同间距 */
+@Composable
+private fun SwitchSetting(
+    label: String,
+    checked: Boolean,
+    subRow: Boolean = false,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = 16.dp,
+                vertical = if (subRow) 4.dp else 8.dp,
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.weight(1f),
+            style = if (subRow) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
+        )
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 
-/** 过滤规则列表：添加屏蔽词 + 规则开关 + 删除（用户规则） */
+/** 过滤规则列表：内置词开关（上方）→ 自定义屏蔽词（下方） */
 @Composable
 private fun FilterRulesSection() {
     val scope = rememberCoroutineScope()
     val rules by AppInstance.locator.filterRepo.observeAll()
         .collectAsState(initial = emptyList())
+
+    val builtinRules = rules.filter { it.builtin }
+    val userRules = rules.filter { !it.builtin }
+
+    // 内置词开关（如「内置：推广关键词（中英）」）
+    builtinRules.forEach { rule ->
+        FilterRuleRow(rule)
+    }
+
+    // 自定义屏蔽词：标题 + 添加输入 + 用户规则列表
+    Text(
+        text = "自定义屏蔽词",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 4.dp),
+    )
 
     // 屏蔽词输入
     var keyword by remember { mutableStateOf("") }
@@ -353,37 +497,44 @@ private fun FilterRulesSection() {
         }
     }
 
-    rules.forEach { rule ->
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = rule.description.ifBlank { rule.pattern },
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 1,
-            )
-            Switch(
-                checked = rule.enabled,
-                onCheckedChange = { enabled ->
-                    scope.launch {
-                        AppInstance.locator.filterRepo.setEnabled(rule.id, enabled)
-                    }
-                },
-            )
-            if (!rule.builtin) {
-                IconButton(onClick = {
-                    scope.launch { AppInstance.locator.filterRepo.delete(rule.id) }
-                }) {
-                    Icon(
-                        Icons.Filled.Close,
-                        contentDescription = "删除规则",
-                        tint = MaterialTheme.colorScheme.error,
-                    )
+    userRules.forEach { rule ->
+        FilterRuleRow(rule)
+    }
+}
+
+/** 单条规则行：描述 + 开关 + 删除（仅非内置） */
+@Composable
+private fun FilterRuleRow(rule: com.xverse.app.core.data.db.FilterRule) {
+    val scope = rememberCoroutineScope()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = rule.description.ifBlank { rule.pattern },
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+        )
+        Switch(
+            checked = rule.enabled,
+            onCheckedChange = { enabled ->
+                scope.launch {
+                    AppInstance.locator.filterRepo.setEnabled(rule.id, enabled)
                 }
+            },
+        )
+        if (!rule.builtin) {
+            IconButton(onClick = {
+                scope.launch { AppInstance.locator.filterRepo.delete(rule.id) }
+            }) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "删除规则",
+                    tint = MaterialTheme.colorScheme.error,
+                )
             }
         }
     }

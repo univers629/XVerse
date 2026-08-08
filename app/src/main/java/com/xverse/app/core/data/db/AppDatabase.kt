@@ -26,7 +26,7 @@ class Converters {
 
 @Database(
     entities = [HistoryRecord::class, DownloadTask::class, FilterRule::class, ExtensionEntity::class],
-    version = 9,
+    version = 10,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -123,9 +123,38 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_9_10 = object : androidx.room.migration.Migration(9, 10) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                // 历史记录从未写入/读取的 durationMs 列移除。
+                // 设备 SQLite 版本不支持 DROP COLUMN（需 3.35+），用重建表方式兼容：
+                // 建新表 → 拷数据 → 删旧表 → 改名 → 重建索引
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS history_new (" +
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "url TEXT NOT NULL, " +
+                        "tweetId TEXT NOT NULL, " +
+                        "username TEXT NOT NULL DEFAULT '', " +
+                        "displayName TEXT NOT NULL DEFAULT '', " +
+                        "textPreview TEXT NOT NULL DEFAULT '', " +
+                        "mediaType TEXT NOT NULL DEFAULT '', " +
+                        "mediaUrl TEXT NOT NULL DEFAULT '', " +
+                        "thumbPath TEXT NOT NULL DEFAULT '', " +
+                        "visitedAt INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "INSERT INTO history_new (id, url, tweetId, username, displayName, textPreview, mediaType, mediaUrl, thumbPath, visitedAt) " +
+                        "SELECT id, url, tweetId, username, displayName, textPreview, mediaType, mediaUrl, thumbPath, visitedAt FROM history"
+                )
+                db.execSQL("DROP TABLE history")
+                db.execSQL("ALTER TABLE history_new RENAME TO history")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_history_visitedAt ON history(visitedAt)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_history_url ON history(url)")
+            }
+        }
+
         fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "xverse.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
                 .fallbackToDestructiveMigration(dropAllTables = true)
                 .build()
     }

@@ -82,17 +82,16 @@ class ServiceLocator(private val app: Context) {
                     version = "2",
                     description = "内置：推广关键词（中英）",
                 ),
-                FilterRule(
-                    type = RuleType.CSS,
-                    pattern = "article[data-testid=\"tweet\"]:has(div[data-testid=\"placementTracking\"])",
-                    enabled = true,
-                    builtin = true,
-                    source = "builtin",
-                    version = "1",
-                    description = "内置：推广帖隐藏",
-                ),
             )
             val existing = kotlinx.coroutines.runBlocking { repo.getBySource("builtin") }
+            // 清理已废弃规则：placementTracking CSS（0.3.0 起废弃——placementTracking 是视频/GIF 帖
+            // 通用播放器跟踪组件，用它做广告判定会误遮所有视频/GIF 帖，见 anti-promo-mutation.js）。
+            // 老库已种过这条规则，列表移除无法触发升级，需显式删除。
+            existing.forEach { old ->
+                if (old.type == RuleType.CSS && old.pattern.contains("placementTracking")) {
+                    kotlinx.coroutines.runBlocking { repo.delete(old.id) }
+                }
+            }
             // 逐条按 version 升级：已有同 source+type 但 version 更低的 → 替换为新版
             builtins.forEach { b ->
                 val current = existing.firstOrNull { it.type == b.type && it.source == b.source }

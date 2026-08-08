@@ -101,6 +101,15 @@ sealed class BrowserCommand {
     /** 重载当前页（扩展开关/导入后立即生效） */
     data object Reload : BrowserCommand()
 
+    /** 过滤方式切换后重建注入：清注入列表 + 重新挂全量 + reload 首页 */
+    data object ReapplyInjections : BrowserCommand()
+
+    /** 过滤带字幕（CC）视频开关：热更新页面标记，不重载 */
+    data class SetCcFilter(val on: Boolean) : BrowserCommand()
+
+    /** 过滤 AI 生成标签开关：热更新页面标记，不重载 */
+    data class SetAiFilter(val on: Boolean) : BrowserCommand()
+
     /** 探针模式切换（adb 广播）：置 probeMode + 清注入 + reload 首页 */
     data class SetProbeMode(val on: Boolean) : BrowserCommand()
 }

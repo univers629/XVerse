@@ -19,7 +19,6 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -53,8 +52,6 @@ class DownloadController(
 
     /** 串行化「文件名保留 + 落库」临界区：多图连点并发入队时保证文件名互不冲突 */
     private val enqueueMutex = kotlinx.coroutines.sync.Mutex()
-
-    val tasks: Flow<List<DownloadTask>> = repo.observeAll()
 
     private val downloader: Downloader by lazy { Downloader(context, repo) }
 

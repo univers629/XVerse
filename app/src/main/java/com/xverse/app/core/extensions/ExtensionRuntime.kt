@@ -49,9 +49,12 @@ class ExtensionRuntime(
     ) {
         private val buf = java.io.ByteArrayOutputStream()
         private var total = 0L
+        /** 最后活动时间戳（超时清理兜底：分块中断后不会常驻） */
+        @Volatile var lastActive: Long = System.currentTimeMillis()
 
         @Synchronized
         fun append(chunk: String, isLast: Boolean) {
+            lastActive = System.currentTimeMillis()
             if (chunk.isNotEmpty()) {
                 val bytes = android.util.Base64.decode(chunk, android.util.Base64.DEFAULT)
                 buf.write(bytes)
@@ -61,6 +64,7 @@ class ExtensionRuntime(
 
         @Synchronized
         fun toBytes(): ByteArray? {
+            lastActive = System.currentTimeMillis()
             return try { buf.toByteArray() } catch (e: Exception) { null }
         }
     }
@@ -1079,6 +1083,10 @@ class ExtensionRuntime(
             if (fileName.isBlank()) {
                 reply(JSONObject().put("ok", false).put("error", "missing fileName")); return@register
             }
+            // 惰性清理：分块中断（页面刷新/脚本重载）后 session 不再收到分块，10 分钟无活动即回收，
+            // 避免未收尾的下载会话常驻内存
+            val now = System.currentTimeMillis()
+            chunkSessions.entries.removeIf { now - it.value.lastActive > 600_000 }
             val session = chunkSessions.getOrPut(fileName) { ChunkSession(fileName, url) }
             session.append(chunk, isLast)
             if (isLast) {

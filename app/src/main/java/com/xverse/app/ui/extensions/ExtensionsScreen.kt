@@ -51,6 +51,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -145,9 +146,11 @@ fun ExtensionsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    text = "支持 .crx/.zip 扩展包、.user.js 用户脚本，或粘贴 Chrome/Edge 商店链接、扩展 ID、直链",
+                    text = "支持 .crx/.zip 扩展包、.user.js 油猴用户脚本，或粘贴 Chrome/Edge 商店链接、扩展 ID、直链",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth(2f / 3f),
+                    textAlign = TextAlign.Center,
                 )
             }
             return
@@ -176,7 +179,7 @@ private enum class ExtensionSource(
     val label: String,
     val iconRes: Int,
 ) {
-    USERSCRIPT("USERSCRIPT", "油猴脚本", com.xverse.app.R.drawable.ic_brand_userscript),
+    USERSCRIPT("USERSCRIPT", "油猴用户脚本", com.xverse.app.R.drawable.ic_brand_userscript),
     CHROME("CHROME", "Chrome 插件", com.xverse.app.R.drawable.ic_brand_chrome),
     EDGE("EDGE", "Edge 插件", com.xverse.app.R.drawable.ic_brand_edge),
 }
@@ -207,7 +210,7 @@ private fun SourceHeader(source: ExtensionSource) {
 /** 扩展卡片：图标 + 名称/版本 + 描述 + 开关 + 配置 + 卸载 */
 @Composable
 private fun ExtensionCard(ext: ExtensionEntity, viewModel: ExtensionsViewModel) {
-    val activity = LocalContext.current as? android.app.Activity
+    var showUninstallConfirm by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -256,7 +259,7 @@ private fun ExtensionCard(ext: ExtensionEntity, viewModel: ExtensionsViewModel) 
                             shape = RoundedCornerShape(4.dp),
                         ) {
                             Text(
-                                text = "用户脚本",
+                                text = "油猴用户脚本",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onTertiaryContainer,
                                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
@@ -287,14 +290,7 @@ private fun ExtensionCard(ext: ExtensionEntity, viewModel: ExtensionsViewModel) 
                     }
                 }
             }
-            IconButton(onClick = {
-                android.app.AlertDialog.Builder(activity ?: return@IconButton)
-                    .setTitle("卸载扩展")
-                    .setMessage("确定要卸载「${ext.name}」吗？将删除其数据和文件。")
-                    .setPositiveButton("卸载") { _, _ -> viewModel.uninstall(ext) }
-                    .setNegativeButton("取消", null)
-                    .show()
-            }) {
+            IconButton(onClick = { showUninstallConfirm = true }) {
                 Icon(
                     Icons.Filled.Delete,
                     contentDescription = "卸载",
@@ -303,9 +299,30 @@ private fun ExtensionCard(ext: ExtensionEntity, viewModel: ExtensionsViewModel) 
             }
         }
     }
+
+    if (showUninstallConfirm) {
+        AlertDialog(
+            onDismissRequest = { showUninstallConfirm = false },
+            title = { Text("卸载扩展") },
+            text = { Text("确定要卸载「${ext.name}」吗？将删除其数据和文件。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showUninstallConfirm = false
+                    viewModel.uninstall(ext)
+                }) {
+                    Text("卸载")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUninstallConfirm = false }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
 }
 
-/** 扩展图标：本地 icon.png 或占位 */
+/** 扩展图标：本地 icon.png 或占位（inSampleSize 缩容解码，避免大图标全尺寸占内存） */
 @Composable
 private fun ExtensionIcon(ext: ExtensionEntity) {
     var icon by remember(ext.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
@@ -316,7 +333,7 @@ private fun ExtensionIcon(ext: ExtensionEntity) {
             val bmp = if (ext.iconPath.isBlank()) null
             else try {
                 val f = File(AppInstance.locator.extensionRuntime.extDir(ext.id), ext.iconPath)
-                if (f.isFile) android.graphics.BitmapFactory.decodeFile(f.absolutePath) else null
+                if (f.isFile) decodeSampled(f.absolutePath, 160) else null
             } catch (e: Exception) {
                 null
             }
@@ -381,19 +398,19 @@ private fun ImportDialog(
                             value = input,
                             onValueChange = { input = it },
                             modifier = Modifier.fillMaxWidth(),
-                            placeholder = { Text("商店链接 / 扩展 ID / .crx .zip .user.js 直链") },
+                            placeholder = { Text("商店链接 / 扩展 ID / .crx .zip .user.js 油猴脚本直链") },
                             singleLine = true,
                         )
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            text = "支持 Chrome/Edge 商店链接、裸扩展 ID，或 .crx/.zip/.user.js 直链",
+                            text = "支持 Chrome/Edge 商店链接、裸扩展 ID，或 .crx/.zip/.user.js 油猴脚本直链",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     "file" -> {
                         Text(
-                            text = "选择本机 .crx / .zip 扩展包或 .user.js 用户脚本",
+                            text = "选择本机 .crx / .zip 扩展包或 .user.js 油猴用户脚本",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -422,6 +439,20 @@ private fun ImportDialog(
     )
 }
 
+/** 缩容解码图片：目标边长上限 [reqPx]，超出的图按 2 的幂采样，控制内存占用 */
+private fun decodeSampled(path: String, reqPx: Int): android.graphics.Bitmap? {
+    val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    android.graphics.BitmapFactory.decodeFile(path, opts)
+    var sample = 1
+    while (opts.outWidth / (sample * 2) >= reqPx && opts.outHeight / (sample * 2) >= reqPx) {
+        sample *= 2
+    }
+    return android.graphics.BitmapFactory.decodeFile(
+        path,
+        android.graphics.BitmapFactory.Options().apply { inSampleSize = sample },
+    )
+}
+
 /** 配置页覆盖层：全屏 WebView 加载扩展 options 页 */
 @Composable
 private fun OptionsOverlay(ext: ExtensionEntity, onClose: () -> Unit) {
@@ -447,6 +478,8 @@ private fun OptionsOverlay(ext: ExtensionEntity, onClose: () -> Unit) {
             AndroidView(
                 factory = { ctx -> runtime.newOptionsWebView(ctx, ext) },
                 modifier = Modifier.fillMaxSize(),
+                // 覆盖层关闭（解组）时销毁 WebView，避免实例常驻泄漏
+                onRelease = { it.destroy() },
             )
         }
     }

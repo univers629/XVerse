@@ -29,8 +29,5 @@ class DownloadRepo(private val dao: DownloadDao) {
     /** 只更新缩略图路径（详见 DAO 注释，避免整行覆盖竞态） */
     suspend fun setThumbPath(id: Long, thumbPath: String) = dao.setThumbPath(id, thumbPath)
 
-    /** 只更新清晰度标签 */
-    suspend fun setResolution(id: Long, resolution: String) = dao.setResolution(id, resolution)
-
     suspend fun delete(task: DownloadTask) = dao.delete(task)
 }

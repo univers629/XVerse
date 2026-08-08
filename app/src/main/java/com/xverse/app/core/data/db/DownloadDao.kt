@@ -36,10 +36,6 @@ interface DownloadDao {
     @Query("UPDATE downloads SET thumbPath = :thumbPath WHERE id = :id")
     suspend fun setThumbPath(id: Long, thumbPath: String)
 
-    /** 只更新清晰度标签（解析升级后给存量任务补写分辨率，不整行覆盖下载状态） */
-    @Query("UPDATE downloads SET resolution = :resolution WHERE id = :id")
-    suspend fun setResolution(id: Long, resolution: String)
-
     @Delete
     suspend fun delete(task: DownloadTask)
 }

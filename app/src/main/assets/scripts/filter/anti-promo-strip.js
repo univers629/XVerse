@@ -6,6 +6,9 @@
   'use strict';
   if (window.__xvAdStripHooked) return;
   window.__xvAdStripHooked = true;
+  // 标记过滤模式：strip=完全不加载广告。mutation 层读到后对漏网广告只隐藏不建卡片
+  // （见 anti-promo-mutation.js hideArticle：strip 模式下无占位卡片、无可点击验证）。
+  window.__xvFilterMode = 'strip';
 
   // 时间线/探索/搜索等 GraphQL 端点（与下载 hook 分开，独立匹配；TweetDetail 留给媒体上报 hook）
   // 包含所有可能携带时间线条目（含广告）的端点；PinnedTimelines 也参与（冷启动会先拉它）。

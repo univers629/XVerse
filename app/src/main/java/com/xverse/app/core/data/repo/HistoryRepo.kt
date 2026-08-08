@@ -24,6 +24,9 @@ class HistoryRepo(private val dao: HistoryDao) {
 
     suspend fun clear() = dao.clearAll()
 
+    /** 清理历史遗留：小写 mediaviewer 孤儿记录（见 HistoryDao.deleteOrphanMediaviewer） */
+    suspend fun deleteOrphanMediaviewer(): Int = dao.deleteOrphanMediaviewer()
+
     /** 按保留天数清理 + 按上限截断 */
     suspend fun cleanup(maxKeepDays: Int = Constants.HISTORY_MAX_KEEP_DAYS, maxRecords: Int = Constants.HISTORY_MAX_RECORDS) {
         val cutoff = System.currentTimeMillis() - maxKeepDays * 86_400_000L

@@ -83,13 +83,13 @@ class ExtensionImporter(
         val text = try {
             stream.readBytes().toString(Charsets.UTF_8)
         } catch (e: Exception) {
-            throw ImportException("无法读取用户脚本文件")
+            throw ImportException("无法读取油猴用户脚本文件")
         }
-        if (text.length > MAX_USER_SCRIPT_BYTES) throw ImportException("用户脚本过大")
+        if (text.length > MAX_USER_SCRIPT_BYTES) throw ImportException("油猴用户脚本过大")
         val extId = sha256Hex(text.toByteArray()).substring(0, 32)
         val fallbackName = name.substringAfterLast('/').removeSuffix(".user.js").removeSuffix(".js").ifBlank { "未命名脚本" }
         val meta = UserScriptParser.parse(text, fallbackName).getOrElse {
-            throw ImportException("无法解析用户脚本：${it.message}")
+            throw ImportException("无法解析油猴用户脚本：${it.message}")
         }
 
         // 存脚本本体

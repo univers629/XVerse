@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -30,6 +29,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,7 +39,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -71,6 +70,9 @@ fun BrowserScreen(
                     is com.xverse.app.BrowserCommand.LoadUrl -> viewModel.loadUrl(it.url)
                     is com.xverse.app.BrowserCommand.OpenTweet -> viewModel.openTweetInstant(it.url)
                     com.xverse.app.BrowserCommand.Reload -> viewModel.reload()
+                    com.xverse.app.BrowserCommand.ReapplyInjections -> viewModel.reapplyInjections()
+                    is com.xverse.app.BrowserCommand.SetCcFilter -> viewModel.applyCcFilterSetting(it.on)
+                    is com.xverse.app.BrowserCommand.SetAiFilter -> viewModel.applyAiFilterSetting(it.on)
                     is com.xverse.app.BrowserCommand.SetProbeMode -> viewModel.enterProbeMode(it.on)
                 }
             }
@@ -120,6 +122,8 @@ fun BrowserScreen(
                     // 非活动 Tab：GONE 隐藏（保状态），活动恢复 VISIBLE
                     wv.visibility = if (active) android.view.View.VISIBLE else android.view.View.GONE
                 },
+                // Activity 销毁 / HOME tab 解组时释放 WebView，避免 native 资源泄漏
+                onRelease = { it.destroy() },
                 modifier = Modifier.fillMaxSize(),
             )
             // 底部加载进度条（浮动覆盖）
@@ -244,14 +248,14 @@ private fun fmtSize(b: Long): String {
     return if (b > 1048576) "%.1f MB".format(b / 1048576.0) else "${b / 1024} KB"
 }
 
-/** 登录状态徽章：未登录点击 → WebView 内打开登录页；已登录点击 → 登出 */
+/** 登录状态徽章：未登录点击 → WebView 内打开登录页；已登录点击 → 确认后登出（MD3 弹窗） */
 @Composable
 private fun LoginChip(viewModel: BrowserViewModel, loggedIn: Boolean) {
-    val context = LocalContext.current
+    var showLogoutConfirm by remember { mutableStateOf(false) }
     Surface(
         onClick = {
             if (loggedIn) {
-                viewModel.confirmLogout(context)
+                showLogoutConfirm = true
             } else {
                 viewModel.startLogin()
             }
@@ -264,6 +268,26 @@ private fun LoginChip(viewModel: BrowserViewModel, loggedIn: Boolean) {
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    if (showLogoutConfirm) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showLogoutConfirm = false },
+            title = { Text("登出") },
+            text = { Text("确定要退出登录吗？将清除 x.com 的登录 Cookie。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLogoutConfirm = false
+                    viewModel.logout()
+                }) {
+                    Text("登出")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLogoutConfirm = false }) {
+                    Text("取消")
+                }
+            },
         )
     }
 }

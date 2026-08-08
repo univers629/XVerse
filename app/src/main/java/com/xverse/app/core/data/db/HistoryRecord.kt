@@ -6,7 +6,7 @@ import androidx.room.PrimaryKey
 
 /**
  * 历史记录实体。
- * 触发点：停留推文 URL 超 3s、点击详情/媒体时写入。
+ * 触发点：停留推文 URL 超 1.5s、点击详情/媒体时写入。
  */
 @Entity(
     tableName = "history",
@@ -27,5 +27,4 @@ data class HistoryRecord(
     /** 本地缩略图路径（写历史时从 mediaUrl 缩略图落盘，历史列表离线显示） */
     val thumbPath: String = "",
     val visitedAt: Long = System.currentTimeMillis(),
-    val durationMs: Long = 0,
 )

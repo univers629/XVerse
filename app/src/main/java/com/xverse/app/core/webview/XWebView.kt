@@ -60,6 +60,10 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
         // x.com 按旧设备路径渲染；真机 UA 与系统 WebView 一致，兼容性最好。
         s.setSupportMultipleWindows(false)
         s.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        // 媒体自动播放：允许无用户手势播放（竖屏刷视频模式需要）。
+        // 否则 x.com 滑动到新视频后调用 video.play() 会被手势策略拦截，
+        // 停在暂停态，必须手动点播放才能继续刷。
+        s.mediaPlaybackRequiresUserGesture = false
         // Google OAuth 跨域 Cookie 需要第三方 Cookie
         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
         CookieManager.getInstance().setAcceptCookie(true)
@@ -128,12 +132,6 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
     fun isLoggedIn(): Boolean {
         val cookies = getCookiesFor(Constants.HOME_URL)
         return cookies.contains("auth_token=") || cookies.contains("ct0=")
-    }
-
-    /** 清空 Cookie（登出） */
-    fun clearAllCookies() {
-        CookieManager.getInstance().removeAllCookies(null)
-        CookieManager.getInstance().flush()
     }
 
     override fun destroy() {

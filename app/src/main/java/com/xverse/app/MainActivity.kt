@@ -49,6 +49,7 @@ import com.xverse.app.ui.history.HistoryScreen
 import com.xverse.app.ui.navigation.XTab
 import com.xverse.app.ui.settings.SettingsScreen
 import com.xverse.app.ui.theme.XVerseTheme
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 
 /** adb 切换探针模式的广播 action */
@@ -151,7 +152,8 @@ class MainActivity : ComponentActivity() {
     /** 文件管理器「用 XVerse 打开」的扩展包 → 导入 + 切扩展页 + Toast */
     private fun importExtension(uri: android.net.Uri) {
         val locator = AppInstance.locator
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+        // 绑定 Activity 生命周期：销毁即取消，避免协程泄漏
+        lifecycleScope.launch {
             try {
                 val extId = locator.extensionImporter.importFile(uri)
                 Toast.makeText(this@MainActivity, "扩展已导入", Toast.LENGTH_SHORT).show()
