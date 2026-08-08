@@ -2,6 +2,7 @@ package com.xverse.app.ui.browser
 
 import android.view.ViewGroup
 import android.webkit.WebChromeClient
+import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,14 +10,20 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -26,8 +33,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -58,6 +69,9 @@ fun BrowserScreen(
                 when (it) {
                     is com.xverse.app.BrowserCommand.GoHome -> viewModel.goHome()
                     is com.xverse.app.BrowserCommand.LoadUrl -> viewModel.loadUrl(it.url)
+                    is com.xverse.app.BrowserCommand.OpenTweet -> viewModel.openTweetInstant(it.url)
+                    com.xverse.app.BrowserCommand.Reload -> viewModel.reload()
+                    is com.xverse.app.BrowserCommand.SetProbeMode -> viewModel.enterProbeMode(it.on)
                 }
             }
         }
@@ -122,7 +136,7 @@ fun BrowserScreen(
     }
 }
 
-/** 顶部工具栏：后退 / 前进 / 刷新 / 首页 + 登录状态 */
+/** 顶部工具栏：后退 / 前进 / 刷新 / 首页 + 下载 + 登录状态 */
 @Composable
 private fun TopBar(viewModel: BrowserViewModel, loggedIn: Boolean) {
     Surface(
@@ -151,9 +165,83 @@ private fun TopBar(viewModel: BrowserViewModel, loggedIn: Boolean) {
                 Icon(Icons.Filled.Home, contentDescription = "首页")
             }
             Spacer(Modifier.weight(1f))
+            DownloadButton(viewModel)
             LoginChip(viewModel, loggedIn)
         }
     }
+}
+
+/**
+ * 顶栏下载按钮：点击弹出媒体选择下拉菜单。
+ * 解析当前推文媒体（GraphQL 缓存优先，兜底页面 HTML），列出清晰度+大小，点击即入队下载。
+ * 菜单宽度限制为屏幕 2/3，避免长文件名撑满屏幕。
+ */
+@Composable
+private fun DownloadButton(viewModel: BrowserViewModel) {
+    var expanded by remember { mutableStateOf(false) }
+    val mediaList by viewModel.mediaList.collectAsStateWithLifecycle()
+    val parsing by viewModel.parsing.collectAsStateWithLifecycle()
+    // 菜单宽度上限：屏幕宽度的 2/3
+    val maxWidth = with(LocalConfiguration.current) {
+        (screenWidthDp * 2f / 3f).toInt().dp
+    }
+
+    Box {
+        IconButton(
+            onClick = {
+                if (!expanded) viewModel.refreshMediaList()
+                expanded = !expanded
+            },
+        ) {
+            Icon(Icons.Filled.Download, contentDescription = "下载媒体")
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.widthIn(max = maxWidth),
+        ) {
+            // 内容随状态交叉渐变：解析中→列表淡入淡出，不闪烁
+            Crossfade(targetState = if (parsing) "parsing" else if (mediaList.isEmpty()) "empty" else "list") { state ->
+                when (state) {
+                    "parsing" -> DropdownMenuItem(
+                        text = {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        },
+                        onClick = {},
+                    )
+                    "empty" -> DropdownMenuItem(
+                        text = { Text("未解析到媒体") },
+                        onClick = { expanded = false },
+                    )
+                    else -> mediaList.forEachIndexed { idx, item ->
+                        DropdownMenuItem(
+                            text = { Text(mediaLabel(item, idx, mediaList)) },
+                            onClick = {
+                                expanded = false
+                                viewModel.enqueueMedia(item)
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 媒体行文案：图片带序号；视频/动图显示清晰度 + 大小 */
+private fun mediaLabel(item: com.xverse.app.core.download.MediaItem, idx: Int, list: List<com.xverse.app.core.download.MediaItem>): String {
+    val isPhoto = list.all { it.extension == "jpg" }
+    val label = item.quality.ifBlank { "原画" }
+    val size = if (item.size > 0) " · ${fmtSize(item.size)}" else ""
+    return if (isPhoto) "图片 ${idx + 1} · $label$size" else "$label$size"
+}
+
+private fun fmtSize(b: Long): String {
+    if (b <= 0) return ""
+    return if (b > 1048576) "%.1f MB".format(b / 1048576.0) else "${b / 1024} KB"
 }
 
 /** 登录状态徽章：未登录点击 → WebView 内打开登录页；已登录点击 → 登出 */

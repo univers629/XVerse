@@ -45,9 +45,4 @@ object UiExecutor {
         error?.let { throw it }
         return result
     }
-
-    /** 主线程同步执行，忽略返回值（用于副作用）。 */
-    fun runOnMain(block: () -> Unit) {
-        postAndWait { block() }
-    }
 }

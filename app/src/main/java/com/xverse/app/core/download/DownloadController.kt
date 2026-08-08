@@ -6,7 +6,6 @@ import androidx.work.Constraints
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
-import androidx.work.OneTimeWorkRequest
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
@@ -39,6 +38,18 @@ class DownloadController(
     private val parser: MediaParser,
 ) {
     private val scope = CoroutineScope(Dispatchers.IO)
+
+    /** 扩展直链下载用的 OkHttp（跟随重定向，超时适当放宽） */
+    private val okHttpClient: okhttp3.OkHttpClient by lazy {
+        okhttp3.OkHttpClient.Builder()
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            // 同 Downloader：twimg CDN 关闭 OkHttp 的 HTTP/2 连接，强制 HTTP/1.1
+            .protocols(listOf(okhttp3.Protocol.HTTP_1_1))
+            .build()
+    }
 
     /** 串行化「文件名保留 + 落库」临界区：多图连点并发入队时保证文件名互不冲突 */
     private val enqueueMutex = kotlinx.coroutines.sync.Mutex()
@@ -91,6 +102,7 @@ class DownloadController(
                 fileName = finalName,
                 dirPath = dirPath,
                 format = media.extension,
+                mediaType = media.mediaType,
                 resolution = media.quality,
                 totalBytes = media.size,
                 status = DownloadStatus.QUEUED,
@@ -115,6 +127,140 @@ class DownloadController(
         } catch (e: Exception) {
             LogStore.error("创建下载任务失败", e)
             false
+        }
+    }
+
+    /**
+     * 字节直存（扩展 GM_download BLOB base64 / 分块组装通道）：
+     * 下载已由扩展完成（字节在手里），这里经 MediaStore 落公共目录 + 登记任务（状态 DONE）。
+     * 目录：图片 → Pictures/XVerse，视频 → Movies/XVerse，其余（zip 等）→ Download/XVerse，
+     * 相册/文件管理器立即可见。文件名直接采用扩展建议值（如 X-Vault 的 {nick}-{date}-{id}.jpg），
+     * 冲突时追加序号。
+     */
+    suspend fun enqueueDownloadBytes(bytes: ByteArray, name: String, media: MediaItem): Boolean {
+        return try {
+            val finalName = enqueueMutex.withLock {
+                uniquify(File(defaultDirPath(), name))
+            }
+            val uri = writeBytesToMediaStore(finalName, bytes)
+            if (uri == null) {
+                LogStore.log(LogCategory.DOWNLOAD, "扩展直存 MediaStore 失败: $finalName")
+                return false
+            }
+            val relPath = mediaStoreRelPath(finalName)
+            val task = DownloadTask(
+                tweetUrl = "",
+                mediaUrl = media.url,
+                fileName = finalName,
+                dirPath = relPath,
+                format = media.extension,
+                resolution = media.quality,
+                totalBytes = bytes.size.toLong(),
+                status = DownloadStatus.DONE,
+                contentUri = uri.toString(),
+            )
+            repo.insert(task)
+            LogStore.log(LogCategory.DOWNLOAD, "扩展直存: $finalName（${bytes.size} B → $relPath）")
+            true
+        } catch (e: Exception) {
+            LogStore.error("扩展字节直存失败", e)
+            false
+        }
+    }
+
+    /** 文件名 → MediaStore 相对目录（图片/视频/其余分别进公共子目录，相册可见） */
+    private fun mediaStoreRelPath(fileName: String): String {
+        val ext = fileName.substringAfterLast('.', "").lowercase()
+        return when {
+            ext in setOf("mp4", "mov", "webm", "mkv", "avi", "3gp", "m4v") -> "Movies/XVerse"
+            ext in setOf("jpg", "jpeg", "png", "gif", "webp", "heic", "bmp") -> "Pictures/XVerse"
+            else -> "Download/XVerse"
+        }
+    }
+
+    /** 经 MediaStore 写字节到公共目录，返回 content URI（失败 null） */
+    private suspend fun writeBytesToMediaStore(fileName: String, bytes: ByteArray): android.net.Uri? =
+        withContext(Dispatchers.IO) {
+            val relPath = mediaStoreRelPath(fileName)
+            val isVideo = relPath.startsWith("Movies")
+            val isImage = relPath.startsWith("Pictures")
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mimeFor(fileName))
+                put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, relPath)
+            }
+            val collection = when {
+                isVideo -> android.provider.MediaStore.Video.Media.getContentUri(
+                    android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY
+                )
+                isImage -> android.provider.MediaStore.Images.Media.getContentUri(
+                    android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY
+                )
+                else -> android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            }
+            try {
+                val u = context.contentResolver.insert(collection, values) ?: return@withContext null
+                try {
+                    context.contentResolver.openOutputStream(u, "w")?.use { out -> out.write(bytes) }
+                } catch (e: Exception) {
+                    context.contentResolver.delete(u, null, null)
+                    return@withContext null
+                }
+                u
+            } catch (e: Exception) {
+                LogStore.error("MediaStore 写入失败: $fileName", e)
+                null
+            }
+        }
+
+    /**
+     * URL 直链下载（扩展 GM_download http/https 通道）：
+     * 由原生 OkHttp 直接下载，经 MediaStore 落公共目录 + 登记任务（状态 DONE）。
+     * 页面零 Blob 转换，绕开 CSP 与 Binder 限制，适用于图片/视频/任意文件。
+     */
+    suspend fun enqueueDownloadUrl(url: String, name: String, media: MediaItem): Boolean {
+        return try {
+            val finalName = enqueueMutex.withLock {
+                uniquify(File(defaultDirPath(), name))
+            }
+            val bytes = downloadToBytes(url) ?: return false
+            val uri = writeBytesToMediaStore(finalName, bytes)
+            if (uri == null) {
+                LogStore.log(LogCategory.DOWNLOAD, "扩展直链 MediaStore 失败: $finalName")
+                return false
+            }
+            val relPath = mediaStoreRelPath(finalName)
+            val task = DownloadTask(
+                tweetUrl = "",
+                mediaUrl = url,
+                fileName = finalName,
+                dirPath = relPath,
+                format = finalName.substringAfterLast('.', "").ifBlank { "bin" },
+                resolution = media.quality,
+                totalBytes = bytes.size.toLong(),
+                status = DownloadStatus.DONE,
+                contentUri = uri.toString(),
+            )
+            repo.insert(task)
+            LogStore.log(LogCategory.DOWNLOAD, "扩展直链: $finalName（${bytes.size} B → $relPath）")
+            true
+        } catch (e: Exception) {
+            LogStore.error("扩展直链下载失败", e)
+            false
+        }
+    }
+
+    /** 用 OkHttp 下载 URL 全部字节（失败返回 null） */
+    private suspend fun downloadToBytes(url: String): ByteArray? = withContext(Dispatchers.IO) {
+        try {
+            okHttpClient.newCall(okhttp3.Request.Builder().url(url).build())
+                .execute()
+                .use { resp ->
+                    if (resp.isSuccessful) resp.body?.bytes() else null
+                }
+        } catch (e: Exception) {
+            LogStore.error("扩展直链拉取失败: $url", e)
+            null
         }
     }
 
@@ -330,10 +476,5 @@ class DownloadController(
             candidate = "${stem}_$counter$ext"
         }
         return candidate
-    }
-
-    /** 请求下载目录权限（SAF 授权） */
-    fun requestDirPermission() {
-        // 由 UI 层发起 ACTION_OPEN_DOCUMENT_TREE，见 DownloadScreen
     }
 }

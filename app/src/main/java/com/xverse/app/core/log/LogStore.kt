@@ -6,7 +6,6 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -41,8 +40,6 @@ object LogStore {
 
     /** UI 观察用状态流 */
     val flow = MutableStateFlow<List<LogEntry>>(emptyList())
-    private val listeners = CopyOnWriteArrayList<(Int) -> Unit>()
-    private val unreadCount = MutableStateFlow(0)
 
     @Volatile
     private var logDir: File? = null
@@ -64,8 +61,6 @@ object LogStore {
             while (entries.size > RING_CAPACITY) entries.removeFirst()
         }
         flow.value = flow.value + entry
-        unreadCount.value += 1
-        listeners.forEach { it(unreadCount.value) }
         // 落盘（追加行）
         val dir = logDir
         if (dir != null) {
@@ -89,13 +84,6 @@ object LogStore {
     }
 
     fun current(): List<LogEntry> = synchronized(this) { entries.toList() }
-
-    fun markRead() {
-        unreadCount.value = 0
-    }
-
-    /** 未读数（角标） */
-    fun unreadFlow() = unreadCount
 
     /** 导出日志到文件，返回文件路径 */
     fun exportToFile(): String? {

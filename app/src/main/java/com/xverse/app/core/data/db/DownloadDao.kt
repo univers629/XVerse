@@ -12,6 +12,10 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads ORDER BY createdAt DESC")
     fun observeAll(): Flow<List<DownloadTask>>
 
+    /** 仅 app 媒体下载（tweetUrl 非空）。扩展 GM_download 直存任务 tweetUrl 为空，不属下载中心 */
+    @Query("SELECT * FROM downloads WHERE tweetUrl != '' ORDER BY createdAt DESC")
+    fun observeAppMedia(): Flow<List<DownloadTask>>
+
     @Query("SELECT * FROM downloads WHERE id = :id LIMIT 1")
     suspend fun findById(id: Long): DownloadTask?
 
@@ -31,6 +35,10 @@ interface DownloadDao {
     /** 只更新缩略图路径字段，避免用入队快照覆盖下载完成的 status/contentUri（缩略图异步落盘晚于下载完成时） */
     @Query("UPDATE downloads SET thumbPath = :thumbPath WHERE id = :id")
     suspend fun setThumbPath(id: Long, thumbPath: String)
+
+    /** 只更新清晰度标签（解析升级后给存量任务补写分辨率，不整行覆盖下载状态） */
+    @Query("UPDATE downloads SET resolution = :resolution WHERE id = :id")
+    suspend fun setResolution(id: Long, resolution: String)
 
     @Delete
     suspend fun delete(task: DownloadTask)

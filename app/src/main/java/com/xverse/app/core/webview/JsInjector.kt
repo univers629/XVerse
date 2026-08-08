@@ -26,6 +26,13 @@ class JsInjector(private val webView: WebView) {
     private val earlyScripts = mutableListOf<String>()
     private val lateScripts = mutableListOf<String>()
 
+    /**
+     * 扩展内容脚本提供者：每次整页加载时**重建** bundle（返回 null 表示无扩展）。
+     * 重建而非预生成字符串，是为了让 GM 存储缓存（内联 GMCACHE）随每次落盘刷新——
+     * 用户脚本 GM_setValue 后 reload，首帧同步读到的值必须是最新的。
+     */
+    private var extProvider: (() -> Pair<String, String>?)? = null
+
     /** 注册 document_start 拦截脚本 */
     fun addEarly(script: String) {
         if (script !in earlyScripts) earlyScripts += script
@@ -36,16 +43,38 @@ class JsInjector(private val webView: WebView) {
         if (script !in lateScripts) lateScripts += script
     }
 
+    /** 清空全部已注册脚本（探针模式切换/重建时调用，下一整页加载即零注入） */
+    fun clear() {
+        earlyScripts.clear()
+        lateScripts.clear()
+        extProvider = null
+    }
+
+    /** 设置扩展注入提供者（early/late bundle）。每次整页加载调用一次，重建注入文本 */
+    fun setExtensionScripts(provider: () -> Pair<String, String>?) {
+        extProvider = provider
+    }
+
     /** 页面开始加载：注入拦截脚本 */
     fun onPageStarted(url: String) {
         LogStore.log(LogCategory.FILTER, "注入 early 脚本 x${earlyScripts.size} → $url")
         earlyScripts.forEach { evaluate(wrapIife(it)) }
+        val p = extProvider?.invoke()
+        if (p != null) {
+            LogStore.log(LogCategory.FILTER, "注入扩展 early bundle → $url")
+            evaluate(p.first)
+        }
     }
 
     /** 页面加载完成：注入增强脚本 */
     fun onPageFinished(url: String) {
         LogStore.log(LogCategory.FILTER, "注入 late 脚本 x${lateScripts.size} → $url")
         lateScripts.forEach { evaluate(wrapIife(it)) }
+        val p = extProvider?.invoke()
+        if (p != null) {
+            LogStore.log(LogCategory.FILTER, "注入扩展 late bundle → $url")
+            evaluate(p.second)
+        }
         // 注入 JS 桥事件监听（让页面可接收原生推送）
         evaluate(BRIDGE_BOOTSTRAP)
     }

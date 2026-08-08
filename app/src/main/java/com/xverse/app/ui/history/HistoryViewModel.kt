@@ -92,15 +92,38 @@ class HistoryViewModel : ViewModel() {
         viewModelScope.launch { locator.historyRepo.delete(record) }
     }
 
+    /** 分享历史记录：调系统分享菜单（分享推文链接 + 文本预览） */
+    fun share(record: HistoryRecord) {
+        val context = locator.appContext
+        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_TEXT, record.url)
+            putExtra(
+                android.content.Intent.EXTRA_TITLE,
+                if (record.displayName.isNotBlank()) record.displayName else "@${record.username}",
+            )
+            putExtra(
+                android.content.Intent.EXTRA_SUBJECT,
+                if (record.textPreview.isNotBlank()) record.textPreview else record.url,
+            )
+        }
+        val chooser = android.content.Intent.createChooser(send, "分享推文")
+        chooser.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(chooser) }
+    }
+
     fun clearAll() {
         viewModelScope.launch { locator.historyRepo.clear() }
     }
 
-    /** 点击历史项：切回首页 Tab 并加载推文页 */
+    /** 点击历史项：切回首页 Tab 并瞬显推文页。
+     *  先切 Tab（恢复 WebView 可见），再发 LoadUrl —— 避免 GoHome 抢 WebView 的竞态。
+     *  推文打开走 BrowserViewModel.openTweetInstant：WebView 已在 x.com 应用内时
+     *  用 SPA 路由瞬显（不整页重载、不闪 X 徽标）；不在时退化为整页 loadUrl。
+     */
     fun open(record: HistoryRecord) {
         com.xverse.app.CommandBus.selectTab(com.xverse.app.ui.navigation.XTab.HOME)
-        com.xverse.app.CommandBus.push(com.xverse.app.BrowserCommand.GoHome)
-        com.xverse.app.CommandBus.push(com.xverse.app.BrowserCommand.LoadUrl(record.url))
+        com.xverse.app.CommandBus.push(com.xverse.app.BrowserCommand.OpenTweet(record.url))
     }
 
     companion object {

@@ -4,12 +4,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
@@ -22,6 +25,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -135,15 +139,19 @@ private fun TaskCard(task: DownloadTask, vm: DownloadViewModel) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Text(
-                        text = "${task.resolution.ifBlank { "原画" }} · ${task.status.label()}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = when (task.status) {
-                            DownloadStatus.DONE -> MaterialTheme.colorScheme.primary
-                            DownloadStatus.FAILED -> MaterialTheme.colorScheme.error
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        FormatBadge(task)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = "${task.resolution.ifBlank { "原画" }} · ${task.status.label()}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = when (task.status) {
+                                DownloadStatus.DONE -> MaterialTheme.colorScheme.primary
+                                DownloadStatus.FAILED -> MaterialTheme.colorScheme.error
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
                 }
                 TaskActions(task, vm)
             }
@@ -194,5 +202,46 @@ private fun TaskActions(task: DownloadTask, vm: DownloadViewModel) {
     // 所有状态都可删除：QUEUED/RUNNING 会取消排队任务，其余清理已完成/失败记录
     IconButton(onClick = { vm.delete(task.id) }) {
         Icon(Icons.Filled.Delete, contentDescription = "删除")
+    }
+}
+
+/**
+ * 格式徽标：GIF / 视频 / 图片。
+ * 优先用任务落库的 mediaType（photo/video/gif）；存量任务该字段为空时按文件名后缀兜底。
+ * 样式对齐扩展页来源徽标：Surface + 4dp 圆角 + labelSmall。
+ */
+@Composable
+private fun FormatBadge(task: DownloadTask) {
+    val type = task.mediaType.ifBlank {
+        when (task.fileName.substringAfterLast('.', "").lowercase()) {
+            "gif" -> "gif"
+            "jpg", "jpeg", "png", "webp", "heic", "bmp" -> "photo"
+            else -> "video"
+        }
+    }
+    val (label, container, content) = when (type) {
+        "gif" -> Triple(
+            "GIF",
+            MaterialTheme.colorScheme.tertiaryContainer,
+            MaterialTheme.colorScheme.onTertiaryContainer,
+        )
+        "photo" -> Triple(
+            "图片",
+            MaterialTheme.colorScheme.secondaryContainer,
+            MaterialTheme.colorScheme.onSecondaryContainer,
+        )
+        else -> Triple(
+            "视频",
+            MaterialTheme.colorScheme.surfaceVariant,
+            MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+    Surface(color = container, shape = RoundedCornerShape(4.dp)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = content,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+        )
     }
 }

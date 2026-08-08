@@ -3,7 +3,6 @@ package com.xverse.app.core.webview
 import android.content.Context
 import com.xverse.app.core.data.db.FilterRule
 import com.xverse.app.core.data.db.RuleType
-import com.xverse.app.core.log.LogCategory
 import com.xverse.app.core.log.LogStore
 
 /**

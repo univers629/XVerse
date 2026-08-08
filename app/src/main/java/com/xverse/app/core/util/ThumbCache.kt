@@ -23,6 +23,8 @@ object ThumbCache {
         OkHttpClient.Builder()
             .connectTimeout(8, TimeUnit.SECONDS)
             .readTimeout(12, TimeUnit.SECONDS)
+            // 同 Downloader：twimg ext_tw_video CDN 关闭 OkHttp 的 HTTP/2 连接，强制 HTTP/1.1
+            .protocols(listOf(okhttp3.Protocol.HTTP_1_1))
             .build()
     }
 

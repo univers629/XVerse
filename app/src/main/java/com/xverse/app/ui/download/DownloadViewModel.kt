@@ -7,7 +7,6 @@ import com.xverse.app.AppInstance
 import com.xverse.app.core.data.db.DownloadStatus
 import com.xverse.app.core.data.db.DownloadTask
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 /**
@@ -22,7 +21,8 @@ class DownloadViewModel : ViewModel() {
 
     init {
         viewModelScope.launch {
-            locator.downloadRepo.observeAll().collect { list ->
+            // 下载中心只显示 app 下载的推文媒体；扩展 GM_download 的直存/直链任务不进列表
+            locator.downloadRepo.observeAppMedia().collect { list ->
                 tasks.value = list
             }
         }

@@ -3,7 +3,6 @@ package com.xverse.app.core.webview
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
-import android.os.Build
 import android.util.AttributeSet
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
@@ -35,8 +34,8 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
     /** 导航拦截：返回 true 表示已消费（交给外部处理） */
     var onShouldOverrideUrl: ((String) -> Boolean)? = null
 
-    /** 返回手势是否应回退页面 */
-    fun canGoBackOrExit(): Boolean = canGoBack()
+    /** 资源拦截：返回非 null 表示由外部提供响应（扩展资源服务：/xv-ext/ 同源中继） */
+    var onShouldInterceptUrl: ((String) -> android.webkit.WebResourceResponse?)? = null
 
     /** 脚本注入器（页面事件自动驱动） */
     val injector: JsInjector by lazy { JsInjector(this) }
@@ -51,12 +50,14 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
         val s = settings
         s.javaScriptEnabled = true
         s.domStorageEnabled = true
-        s.loadWithOverviewMode = true
-        s.useWideViewPort = true
+        s.loadWithOverviewMode = false
+        s.useWideViewPort = false
         s.setSupportZoom(false)
         s.builtInZoomControls = false
         s.cacheMode = WebSettings.LOAD_DEFAULT
-        s.userAgentString = Constants.CHROME_MOBILE_UA
+        // 使用 WebView 真机默认 UA（含真实 Android 版本/设备型号），不硬编码假 UA。
+        // 历史教训：硬编码 "Android 10; K" 曾用于伪装 Chrome 移动版，反而可能被
+        // x.com 按旧设备路径渲染；真机 UA 与系统 WebView 一致，兼容性最好。
         s.setSupportMultipleWindows(false)
         s.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
         // Google OAuth 跨域 Cookie 需要第三方 Cookie
@@ -81,6 +82,21 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
                     return true
                 }
                 return onShouldOverrideUrl?.invoke(url) ?: false
+            }
+
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest,
+            ): android.webkit.WebResourceResponse? {
+                val url = request.url.toString()
+                // 扩展资源服务：同源中继 https://<页面origin>/xv-ext/<id>/<path> → 本地扩展目录。
+                // 同源路径用于绕过 x.com CSP（script-src/connect-src 白名单无自定义 scheme，
+                // 但含 'self'），让扩展内容脚本的 import()/fetch() 动态加载可用。
+                if (url.contains("/xv-ext/")) {
+                    val resp = onShouldInterceptUrl?.invoke(url)
+                    if (resp != null) return resp
+                }
+                return super.shouldInterceptRequest(view, request)
             }
 
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
@@ -118,14 +134,6 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
     fun clearAllCookies() {
         CookieManager.getInstance().removeAllCookies(null)
         CookieManager.getInstance().flush()
-    }
-
-    /** 下拉刷新：页面顶部无滚动时触发 reload */
-    fun refreshIfAtTop() {
-        post {
-            // 页面滚动位置由 JS 上报；这里保守 reload
-            reload()
-        }
     }
 
     override fun destroy() {

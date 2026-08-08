@@ -19,6 +19,7 @@ data class MediaItem(
     val quality: String = "",   // 清晰度标签，如 1080 / 720 / 原图 / gif
     val size: Long = 0,
     val extension: String = "mp4",
+    val mediaType: String = "video", // 媒体类型：photo / video / gif（下载列表徽标用）
     val fileName: String? = null,
     val thumbnailUrl: String = "",  // 缩略图（图片=自身小图 / 视频=封面帧），用于下载中心列表
 )
@@ -45,6 +46,11 @@ class MediaParser(private val context: Context) {
     /** 最近一次 GraphQL 响应解析出的媒体，按推文 id 隔离（避免时间线/关联帖串入） */
     private val cachedMedia = java.util.concurrent.ConcurrentHashMap<String, List<MediaItem>>()
 
+    /** 供历史写入复用：返回该推文缓存里第一项媒体的缩略图 URL（无则空串）。
+     *  GraphQL 缓存的视频项 thumbnailUrl 是海报帧（ext_tw_video_thumb…:small）。 */
+    fun cachedThumbnail(tweetId: String): String =
+        cachedMedia[tweetId]?.firstOrNull()?.thumbnailUrl ?: ""
+
     /** 原生侧接收页面 GraphQL 响应，解析并缓存直链（按 tweetId 归属） */
     fun cacheFromGraphQL(tweetId: String, json: String) {
         val items = parseGraphQLMedia(json)
@@ -57,8 +63,10 @@ class MediaParser(private val context: Context) {
     /** 解析推文 URL 的全部媒体直链（优先按 tweetId 命中的 GraphQL 缓存，兜底页面 HTML） */
     suspend fun parse(tweetUrl: String): List<MediaItem> = withContext(Dispatchers.IO) {
         LogStore.log(LogCategory.DOWNLOAD, "解析推文媒体: $tweetUrl")
-        // 从 URL 提取 tweetId，只取属于该推文的缓存（引用/时间线里的其他推文不串入）
-        val parsed = com.xverse.app.core.data.repo.HistoryRepo.parseTweetUrl(tweetUrl)
+        // mediaViewer 里真正要下载的推文在 currentTweet 参数（滑动浏览），路径 id 只是宿主推文
+        val norm = canonicalTweetUrl(tweetUrl)
+        // 从规范 URL 提取 tweetId，只取属于该推文的缓存（引用/时间线里的其他推文不串入）
+        val parsed = com.xverse.app.core.data.repo.HistoryRepo.parseTweetUrl(norm)
         val tweetId = parsed?.second ?: ""
         val cached = if (tweetId.isNotBlank()) cachedMedia[tweetId] else null
         if (cached != null && cached.isNotEmpty()) {
@@ -66,8 +74,8 @@ class MediaParser(private val context: Context) {
             return@withContext cached
         }
         try {
-            val cookie = com.xverse.app.core.auth.CookieManagerReader.cookiesForFromBackground(tweetUrl)
-            val html = fetch(tweetUrl, cookie)
+            val cookie = com.xverse.app.core.auth.CookieManagerReader.cookiesForFromBackground(norm)
+            val html = fetch(norm, cookie)
             if (html.isNullOrBlank()) {
                 LogStore.log(LogCategory.DOWNLOAD, "拉取推文页失败")
                 return@withContext emptyList()
@@ -115,6 +123,20 @@ class MediaParser(private val context: Context) {
             if (out.size >= 12) break
             if (stopAfterFirst && out.isNotEmpty()) return
         }
+    }
+
+    /** 子页（/video/1、/photo/1、/mediaviewer）不内嵌 extended_entities，归一化到整帖页再拉取 */
+    private fun canonicalTweetUrl(url: String): String {
+        // mediaViewer 滑动浏览：真正目标推文在 currentTweet 参数（+currentTweetUser），路径 id 是宿主
+        val currentTweet = Regex("currentTweet=(\\d+)").find(url)?.groupValues?.get(1)
+        if (currentTweet != null) {
+            val user = Regex("currentTweetUser=([^&]+)").find(url)?.groupValues?.get(1)
+            return "https://x.com/${user ?: "i"}/status/$currentTweet"
+        }
+        return url
+            .replace(Regex("/photo/\\d+$"), "")
+            .replace(Regex("/video/\\d+$"), "")
+            .replace(Regex("/mediaviewer.*", RegexOption.IGNORE_CASE), "")
     }
 
     private fun fetch(url: String, cookie: String): String? {
@@ -259,12 +281,31 @@ class MediaParser(private val context: Context) {
                     }
                     if (best != null) {
                         val url = best.optString("url")
-                        val label = if (type == "animated_gif") "gif" else "${bestBitrate / 1000}k"
+                        // 分辨率优先取 media 对象 original_info（视频/GIF 均有真实宽高），
+                        // 比 URL 内编码更可靠：新版 x.com 部分视频与 tweet_video(GIF) URL
+                        // 不含 /vid/…/WxH/ 段（旧逻辑会兜底成 2176k / gif，用户不可读）。
+                        // 拿不到 original_info 再退回 URL 正则，最后才兜底码率。
+                        val oi = m.optJSONObject("original_info")
+                        val oiDim = if (oi != null) {
+                            val w = oi.optInt("width", 0)
+                            val h = oi.optInt("height", 0)
+                            if (w > 0 && h > 0) "${w}x${h}" else ""
+                        } else ""
+                        val label = when {
+                            oiDim.isNotEmpty() -> oiDim
+                            else -> {
+                                val res = Regex("/vid/[^/]+?/(\\d+)x(\\d+)/").find(url)
+                                if (res != null) "${res.groupValues[1]}x${res.groupValues[2]}"
+                                else if (type == "animated_gif") "gif"
+                                else "${bestBitrate / 1000}k"
+                            }
+                        }
                         if (url.isNotEmpty()) out.add(
                             MediaItem(
                                 url = url,
                                 quality = label,
                                 extension = "mp4",
+                                mediaType = if (type == "animated_gif") "gif" else "video",
                                 thumbnailUrl = if (poster.isNotEmpty()) poster + ":small" else "",
                             )
                         )
@@ -275,11 +316,21 @@ class MediaParser(private val context: Context) {
                     val url = m.optString("media_url_https")
                     if (url.isNotEmpty()) {
                         val orig = if (url.contains("?")) url.substringBefore("?") + "?format=jpg&name=orig" else url + ":orig"
+                        // 图片只有原图一档（x.com 的多档只是缩略图），标签直接用真实分辨率
+                        // （如「1279x1873」）更有信息量；拿不到时退回「原图」
+                        val oi = m.optJSONObject("original_info")
+                        val dim = if (oi != null) {
+                            val w = oi.optInt("width", 0)
+                            val h = oi.optInt("height", 0)
+                            if (w > 0 && h > 0) "${w}x$h" else ""
+                        } else ""
+                        val label = dim.ifEmpty { "原图" }
                         out.add(
                             MediaItem(
                                 url = orig,
-                                quality = "原图",
+                                quality = label,
                                 extension = "jpg",
+                                mediaType = "photo",
                                 thumbnailUrl = if (url.contains("?")) url.substringBefore("?") + "?format=jpg&name=small" else url + ":small",
                             )
                         )
@@ -289,13 +340,28 @@ class MediaParser(private val context: Context) {
         }
     }
 
-    /** 兜底：正则提取 pbs.twimg.com 直链 */
+    /** 兜底：正则提取 pbs.twimg.com 图片直链 + video.twimg.com 视频直链 */
     private fun extractFromRegex(html: String, out: MutableList<MediaItem>) {
-        val re = Regex("""https://pbs\.twimg\.com/media/[A-Za-z0-9_-]+(?:\.[a-z]+)?""")
-        re.findAll(html).forEach { match ->
+        val imgRe = Regex("""https://pbs\.twimg\.com/media/[A-Za-z0-9_-]+(?:\.[a-z]+)?""")
+        imgRe.findAll(html).forEach { match ->
             val url = match.value
             if (url.isNotBlank() && out.none { it.url == url }) {
-                out.add(MediaItem(url = url, quality = "原图", extension = url.substringAfterLast('.')))
+                // 兜底路径拿不到 original_info 尺寸，标签留空（UI 会显示「原画」兜底）
+                out.add(MediaItem(url = url, quality = "", extension = url.substringAfterLast('.'), mediaType = "photo"))
+            }
+        }
+        if (out.isEmpty()) {
+            val vidRe = Regex("""https://video\.twimg\.com/[^"'\\\s]+?\.mp4[^"'\\\s]*""")
+            val seen = mutableSetOf<String>()
+            vidRe.findAll(html).forEach { match ->
+                val raw = match.value.trimEnd('.', ';', ',')
+                val url = raw.substringBefore('?')
+                if (url.isNotBlank() && seen.add(url)) {
+                    // 视频 URL 同样编码分辨率，兜底时也解析出来
+                    val dim = Regex("/vid/[^/]+?/(\\d+)x(\\d+)/").find(url)
+                    val label = if (dim != null) "${dim.groupValues[1]}x${dim.groupValues[2]}" else ""
+                    out.add(MediaItem(url = url, quality = label, extension = "mp4", mediaType = "video"))
+                }
             }
         }
     }

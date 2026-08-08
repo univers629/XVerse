@@ -1,7 +1,6 @@
 package com.xverse.app.ui.history
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +13,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -91,6 +91,7 @@ fun HistoryScreen(
                         record = record,
                         onClick = { viewModel.open(record) },
                         onDelete = { viewModel.delete(record) },
+                        onShare = { viewModel.share(record) },
                     )
                 }
             }
@@ -109,6 +110,7 @@ private fun HistoryRow(
     record: HistoryRecord,
     onClick: () -> Unit,
     onDelete: () -> Unit,
+    onShare: () -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -155,6 +157,13 @@ private fun HistoryRow(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            IconButton(onClick = onShare) {
+                Icon(
+                    Icons.Filled.Share,
+                    contentDescription = "分享",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             IconButton(onClick = onDelete) {

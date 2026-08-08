@@ -42,6 +42,16 @@
                 <data android:scheme="https" android:host="www.twitter.com" />
                 <data android:scheme="https" android:host="mobile.twitter.com" />
             </intent-filter>
+            <!-- 扩展包：.crx / .zip 文件在文件管理器中「用 XVerse 打开」→ 直接导入。
+                 仅声明具体 MIME，避免占用所有文件类型 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="application/x-chrome-extension" />
+                <data android:mimeType="application/zip" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
         </activity>
 
         <!-- 下载前台服务 -->

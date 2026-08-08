@@ -24,6 +24,7 @@ data class DownloadTask(
     val fileName: String,
     val dirPath: String = "",
     val format: String = "mp4",
+    val mediaType: String = "", // photo / video / gif（下载列表格式徽标；空串兼容存量任务）
     val resolution: String = "",
     val status: DownloadStatus = DownloadStatus.QUEUED,
     val progress: Int = 0,

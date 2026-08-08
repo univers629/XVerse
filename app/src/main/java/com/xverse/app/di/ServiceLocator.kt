@@ -13,6 +13,9 @@ import com.xverse.app.core.download.DownloadController
 import com.xverse.app.core.download.DownloadNotifier
 import com.xverse.app.core.download.Downloader
 import com.xverse.app.core.download.MediaParser
+import com.xverse.app.core.extensions.ExtensionImporter
+import com.xverse.app.core.extensions.ExtensionRepo
+import com.xverse.app.core.extensions.ExtensionRuntime
 import com.xverse.app.core.log.LogStore
 
 /**
@@ -47,6 +50,13 @@ class ServiceLocator(private val app: Context) {
 
     /** M4：Custom Tab 辅助登录 + 登出收口 */
     val authController: AuthController by lazy { AuthController(app) }
+
+    /** M6：扩展 数据层 + 导入 + 运行时 */
+    val extensionRepo: ExtensionRepo by lazy { ExtensionRepo(db.extensionDao()) }
+    val extensionImporter: ExtensionImporter by lazy { ExtensionImporter(app, extensionRepo) }
+    val extensionRuntime: ExtensionRuntime by lazy {
+        ExtensionRuntime(app, extensionRepo, downloadController)
+    }
 
     init {
         LogStore.init(app)

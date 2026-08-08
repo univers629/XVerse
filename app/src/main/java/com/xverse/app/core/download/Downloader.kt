@@ -35,6 +35,11 @@ class Downloader(
         OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
+            // 强制 HTTP/1.1：twimg 的 ext_tw_video CDN 边缘会对 OkHttp 的 HTTP/2
+            // 连接发 GOAWAY 关闭（ConnectionShutdownException: Connection closed），
+            // 导致视频下载失败；图片/GIF 的边缘节点不关所以一直正常。curl 不受影响。
+            // HTTP/1.1 对单文件下载完全够用，且规避该 CDN 兼容性问题。
+            .protocols(listOf(okhttp3.Protocol.HTTP_1_1))
             .build()
     }
 

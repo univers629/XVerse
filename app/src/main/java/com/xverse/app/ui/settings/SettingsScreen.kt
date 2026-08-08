@@ -2,23 +2,28 @@ package com.xverse.app.ui.settings
 
 import android.app.Activity
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -30,6 +35,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.xverse.app.AppInstance
@@ -37,12 +43,21 @@ import com.xverse.app.CommandBus
 import kotlinx.coroutines.launch
 
 /**
- * 设置页：外观 / 数据 / 过滤 / 账户 / 下载 / 关于。
+ * 设置页：外观 / 数据 / 过滤 / 下载 / 账户 / 开发 / 关于。
+ * 日志收进本页做二级页面（不再占用底栏 Tab）。
  */
 @Composable
 fun SettingsScreen(
     modifier: Modifier = Modifier,
 ) {
+    // 二级页路由：null=设置主列表，"logs"=运行日志页
+    var sub by remember { mutableStateOf<String?>(null) }
+
+    if (sub == "logs") {
+        LogsSubPage(onBack = { sub = null })
+        return
+    }
+
     val scope = rememberCoroutineScope()
     val settings = AppInstance.locator.settings
 
@@ -59,15 +74,10 @@ fun SettingsScreen(
 
         SectionTitle("外观")
         val themeMode by settings.themeMode.collectAsState(initial = "system")
-        RowSetting("跟随系统", selected = themeMode == "system") {
-            scope.launch { settings.setThemeMode("system") }
-        }
-        RowSetting("浅色模式", selected = themeMode == "light") {
-            scope.launch { settings.setThemeMode("light") }
-        }
-        RowSetting("深色模式", selected = themeMode == "dark") {
-            scope.launch { settings.setThemeMode("dark") }
-        }
+        ThemeDropdown(
+            selected = themeMode,
+            onSelect = { v -> scope.launch { settings.setThemeMode(v) } },
+        )
 
         SectionTitle("数据")
         val historyEnabled by settings.historyEnabled.collectAsState(initial = true)
@@ -93,12 +103,61 @@ fun SettingsScreen(
         SectionTitle("账户")
         AccountSection()
 
+        SectionTitle("开发")
+        // 日志二级页入口
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { sub = "logs" }
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "查看运行日志",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = "分类筛选 / 导出",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
         SectionTitle("关于")
         Text(
-            text = "XVerse 0.1.0\n仅面向 x.com 网页版。纯增强壳，不代理流量。",
+            text = "XVerse 0.2.0\n仅面向 x.com 网页版。纯增强壳，不代理流量。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+    }
+}
+
+/** 日志二级页：返回箭头 + 标题 + 复用 LogsScreen（分类筛选 + 导出，无需改动） */
+@Composable
+private fun LogsSubPage(onBack: () -> Unit) {
+    // 二级页顶到屏幕顶，需给状态栏留高，否则标题/返回箭头被状态栏遮住
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回设置")
+            }
+            Text(
+                text = "运行日志",
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.padding(horizontal = 8.dp),
+            )
+        }
+        com.xverse.app.ui.logs.LogsScreen(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = 4.dp),
         )
     }
 }
@@ -134,8 +193,8 @@ private fun AccountSection() {
                         .show()
                 } else {
                     // 未登录 → 切回首页并打开 WebView 内登录页
+                    // 只发 LoadUrl：整页加载登录页，无需先 GoHome（避免抢占 WebView 竞态）
                     CommandBus.selectTab(com.xverse.app.ui.navigation.XTab.HOME)
-                    CommandBus.push(com.xverse.app.BrowserCommand.GoHome)
                     CommandBus.push(
                         com.xverse.app.BrowserCommand.LoadUrl(
                             com.xverse.app.core.util.Constants.LOGIN_URL
@@ -170,17 +229,67 @@ private fun SectionTitle(title: String) {
     )
 }
 
+/**
+ * 颜色模式下拉：设置行样式 —— 左侧「颜色模式」标签 + 右侧按钮（当前值 + 箭头）。
+ * DropdownMenu 的 popup 锚定右侧按钮的 wrap-content Box，随按钮靠右落下，从右侧展开。
+ * 不带输入框边框，与其它设置行（如「记录浏览历史」）视觉一致。
+ */
 @Composable
-private fun RowSetting(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun ThemeDropdown(selected: String, onSelect: (String) -> Unit) {
+    val options = listOf(
+        "system" to "跟随系统",
+        "light" to "浅色模式",
+        "dark" to "深色模式",
+    )
+    val label = options.firstOrNull { it.first == selected }?.second ?: "跟随系统"
+    var expanded by remember { mutableStateOf(false) }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text = label, modifier = Modifier.weight(1f))
-        RadioButton(selected = selected, onClick = onClick)
+        Text(
+            text = "颜色模式",
+            modifier = Modifier.weight(1f),
+        )
+        // 右侧按钮锚点：DropdownMenu 的 Popup 锚定此 Box（wrap content，即按钮本身），
+        // 菜单左缘对齐按钮左缘、落在按钮下方 → 随按钮靠右显示，从右侧展开
+        Box {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { expanded = true }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Icon(
+                    Icons.Filled.ArrowDropDown,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+            ) {
+                options.forEach { (value, text) ->
+                    DropdownMenuItem(
+                        text = { Text(text) },
+                        onClick = {
+                            expanded = false
+                            onSelect(value)
+                        },
+                    )
+                }
+            }
+        }
     }
 }
 

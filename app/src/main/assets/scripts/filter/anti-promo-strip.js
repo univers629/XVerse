@@ -9,7 +9,9 @@
 
   // 时间线/探索/搜索等 GraphQL 端点（与下载 hook 分开，独立匹配；TweetDetail 留给媒体上报 hook）
   // 包含所有可能携带时间线条目（含广告）的端点；PinnedTimelines 也参与（冷启动会先拉它）。
-  var TIMELINE_RE = /\/graphql\/[A-Za-z0-9_-]+\/(?:HomeTimeline|HomeLatestTimeline|SearchTimeline|UserTweets|UserMedia|UserTweetsAndReplies|ListLatestTweetsTimeline|ExploreTimeline|Bookmarks|NotificationsTimeline|PinnedTimelines|TimelineShowAlert|TweetResultByRestId|MutesTimeline|BlockedAccountsTimeline|ListMembershipsTimeline|ListPinsTimeline|PeopleDiscoveryModule|HomeTimelineQuery|FavoriteTimeline)(?:\?|$)/;
+  // 注意：不包含 TweetResultByRestId —— 详情页按 ID 拉取主推文数据的端点，不是广告流；
+  // 参与广告过滤会把主推文当条目删掉，导致帖子消失、评论区顶替（历史页回跳出现过的 bug）。
+  var TIMELINE_RE = /\/graphql\/[A-Za-z0-9_-]+\/(?:HomeTimeline|HomeLatestTimeline|SearchTimeline|UserTweets|UserMedia|UserTweetsAndReplies|ListLatestTweetsTimeline|ExploreTimeline|Bookmarks|NotificationsTimeline|PinnedTimelines|TimelineShowAlert|MutesTimeline|BlockedAccountsTimeline|ListMembershipsTimeline|ListPinsTimeline|PeopleDiscoveryModule|HomeTimelineQuery|FavoriteTimeline)(?:\?|$)/;
   var MAX_BYTES = 8388608; // 8MB 守卫
 
   var LOG_KEY = '[XV] ad strip';

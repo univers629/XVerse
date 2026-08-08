@@ -12,6 +12,9 @@ class DownloadRepo(private val dao: DownloadDao) {
 
     fun observeAll(): Flow<List<DownloadTask>> = dao.observeAll()
 
+    /** 仅 app 媒体下载（过滤扩展 GM_download 直存任务） */
+    fun observeAppMedia(): Flow<List<DownloadTask>> = dao.observeAppMedia()
+
     suspend fun findById(id: Long): DownloadTask? = dao.findById(id)
 
     /** 未完成任务的候选文件名集合（多图连点入队时按任务表去重） */
@@ -25,6 +28,9 @@ class DownloadRepo(private val dao: DownloadDao) {
 
     /** 只更新缩略图路径（详见 DAO 注释，避免整行覆盖竞态） */
     suspend fun setThumbPath(id: Long, thumbPath: String) = dao.setThumbPath(id, thumbPath)
+
+    /** 只更新清晰度标签 */
+    suspend fun setResolution(id: Long, resolution: String) = dao.setResolution(id, resolution)
 
     suspend fun delete(task: DownloadTask) = dao.delete(task)
 }
