@@ -4,7 +4,7 @@
 
 <img src="docs/icon.png" width="128" height="128" alt="XVerse 图标" />
 
-一个为 x.com 打造的 Android WebView 增强壳 —— 广告剥离 · 一键下载 · 扩展加载 · 浏览历史。
+一个为 x.com 打造的 Android WebView 增强壳 —— 广告过滤 · 一键下载 · 扩展加载 · 浏览历史。
 
 纯客户端壳，**不代理流量、不改写数据、不绕过登录**；内容均来自 X 官方登录会话。
 
