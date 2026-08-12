@@ -14,11 +14,15 @@ class ExtensionRepo(private val dao: ExtensionDao) {
 
     suspend fun getEnabled(): List<ExtensionEntity> = dao.getEnabled()
 
+    suspend fun getAll(): List<ExtensionEntity> = dao.getAll()
+
     suspend fun getById(id: String): ExtensionEntity? = dao.getById(id)
 
     suspend fun insert(ext: ExtensionEntity) = dao.insert(ext)
 
     suspend fun setEnabled(id: String, enabled: Boolean) = dao.setEnabled(id, enabled)
+
+    suspend fun setSource(id: String, source: String) = dao.setSource(id, source)
 
     suspend fun delete(id: String) = dao.delete(id)
 }

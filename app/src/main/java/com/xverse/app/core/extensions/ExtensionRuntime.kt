@@ -12,6 +12,20 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -36,11 +50,32 @@ class ExtensionRuntime(
 ) {
 
     /**
+     * 已注册扩展存储 Bridge 的弱引用集合。
+     *
+     * 配置页和主页面分别运行在不同 WebView 中，storage.onChanged 必须经原生层广播，
+     * 才能让配置页写入后主页面立即收到变更。弱引用避免已销毁 WebView 被运行时长期持有。
+     */
+    private val storageBridges: MutableSet<Bridge> = java.util.Collections.synchronizedSet(
+        java.util.Collections.newSetFromMap(java.util.WeakHashMap<Bridge, Boolean>())
+    )
+
+    /**
      * GM_download blob:/data: 分块传输会话表（key = fileName）。
      * 页面按 512KB 分块经 extDownloadChunk 桥到达，这里累积 base64 解码字节，
      * last=true 时组装落库。文件名即天然键（并发下载不同文件互不干扰）。
      */
     private val chunkSessions = java.util.concurrent.ConcurrentHashMap<String, ChunkSession>()
+    private val chunkCleanupJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+    private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** GM.xmlHttpRequest 原生 HTTPS 通道：绕过网页 CORS，供用户自行导入的翻译脚本调用。 */
+    private val userScriptHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(20, TimeUnit.SECONDS)
+            .readTimeout(90, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .build()
+    }
 
     /** 一次分块下载会话：累积 base64 分块 → 最后组装完整字节 */
     private class ChunkSession(
@@ -53,19 +88,27 @@ class ExtensionRuntime(
         @Volatile var lastActive: Long = System.currentTimeMillis()
 
         @Synchronized
-        fun append(chunk: String, isLast: Boolean) {
+        fun append(chunk: String): Boolean {
             lastActive = System.currentTimeMillis()
             if (chunk.isNotEmpty()) {
-                val bytes = android.util.Base64.decode(chunk, android.util.Base64.DEFAULT)
+                val bytes = runCatching {
+                    android.util.Base64.decode(chunk, android.util.Base64.DEFAULT)
+                }.getOrElse { return false }
+                if (total + bytes.size > MAX_CHUNK_SESSION_BYTES) return false
                 buf.write(bytes)
                 total += bytes.size.toLong()
             }
+            return true
         }
 
         @Synchronized
         fun toBytes(): ByteArray? {
             lastActive = System.currentTimeMillis()
             return try { buf.toByteArray() } catch (e: Exception) { null }
+        }
+
+        private companion object {
+            const val MAX_CHUNK_SESSION_BYTES = 32L * 1024 * 1024
         }
     }
 
@@ -80,7 +123,23 @@ class ExtensionRuntime(
     val extRoot: File
         get() = File(context.filesDir, "extensions").apply { mkdirs() }
 
+    /** 与扩展目录解耦的设置页原生过滤规则。 */
+    private val integratedFilterPackRoot: File
+        get() = File(context.filesDir, "filter_packs").apply { mkdirs() }
+
     fun extDir(extId: String): File = File(extRoot, extId)
+
+    /** 已从商店过滤扩展中剥离出的集成规则摘要（设置页只读轻量元数据）。 */
+    fun filterPackSummaries(): List<ExtensionFilterPackStore.Summary> {
+        ExtensionFilterPackStore.migrateLegacyPacks(extRoot, integratedFilterPackRoot)
+        return ExtensionFilterPackStore.summaries(integratedFilterPackRoot)
+    }
+
+    /** 加载设置页集成规则；仅在广告过滤启用且对应子开关开启时调用。 */
+    fun loadFilterPacks(disabledGroupKeys: Set<String> = emptySet()): List<ExtensionFilterPackStore.Pack> {
+        ExtensionFilterPackStore.migrateLegacyPacks(extRoot, integratedFilterPackRoot)
+        return ExtensionFilterPackStore.loadAll(integratedFilterPackRoot, disabledGroupKeys)
+    }
 
     /** 读取扩展内文件文本（不存在返回 null） */
     fun readExtFile(extId: String, relPath: String): String? {
@@ -222,7 +281,13 @@ class ExtensionRuntime(
             if (spec.js.isNotEmpty()) {
                 // 用户脚本运行时补丁：兼容新版 X 数据结构的文本替换
                 //（只对 X-Vault 的目标行生效，其他脚本不含这些字面量则原样通过）
-                val jsTexts = spec.js.mapNotNull { readExtFile(ext.id, it).let { s -> if (s != null) patchUserScript(s) else null } }
+                val jsTexts = spec.js.mapNotNull { rel ->
+                    readExtFile(ext.id, rel)?.let { source ->
+                        // 商店 CRX 必须原样运行，不能做按插件内容匹配的文本魔改。
+                        // 历史兼容补丁只允许作用于明确标记为 USERSCRIPT 的油猴脚本。
+                        if (ext.source == "USERSCRIPT") patchUserScript(source) else source
+                    }
+                }
                 if (jsTexts.isNotEmpty()) {
                     group.add("(function(){\n'use strict';\n" + jsTexts.joinToString("\n") + "\n})();")
                 }
@@ -305,7 +370,32 @@ class ExtensionRuntime(
               var GMCACHE = JSON.parse("$gmc");
               // __gmCallbacks 可能早于 BRIDGE_BOOTSTRAP 注入，此处补建
               window.__gmCallbacks = window.__gmCallbacks || {};
-              window.__gmCallbacks._onEvent = window.__gmCallbacks._onEvent || function(){};
+              var storageChangeListeners = [];
+              var gmValueListeners = {};
+              var gmValueListenerSeq = 0;
+              var previousNativeEventHandler = window.__gmCallbacks._onEvent;
+              window.__gmCallbacks._onEvent = function(event) {
+                if (typeof previousNativeEventHandler === 'function') {
+                  try { previousNativeEventHandler(event); } catch(e) {}
+                }
+                if (!event || event.type !== 'extStorageChanged' || !event.payload || event.payload.extId !== EXT_ID) return;
+                var changes = event.payload.changes || {};
+                var areaName = event.payload.areaName || 'local';
+                Object.keys(changes).forEach(function(key) {
+                  var change = changes[key] || {};
+                  if (Object.prototype.hasOwnProperty.call(change, 'newValue')) GMCACHE[key] = change.newValue;
+                  else delete GMCACHE[key];
+                  Object.keys(gmValueListeners).forEach(function(id) {
+                    var item = gmValueListeners[id];
+                    if (!item || item.key !== key) return;
+                    try { item.listener(key, change.oldValue, change.newValue, true); }
+                    catch(e) { console.error('[XV-EXT] GM value listener', e); }
+                  });
+                });
+                storageChangeListeners.slice().forEach(function(listener) {
+                  try { listener(changes, areaName); } catch(e) { console.error('[XV-EXT] storage.onChanged listener', e); }
+                });
+              };
               function extCall(type, payload, cb) {
                 var cbId = cb ? ('_xve' + (window.__xvExtSeq = (window.__xvExtSeq || 0) + 1)) : '';
                 if (cb && window.__gmCallbacks) {
@@ -321,12 +411,35 @@ class ExtensionRuntime(
               }
               function makeStorage() {
                 function nextId() { return '_xve' + (window.__xvExtSeq = (window.__xvExtSeq || 0) + 1); }
+                function storageChangedEvent() {
+                  return {
+                    addListener: function(listener) {
+                      if (typeof listener === 'function' && storageChangeListeners.indexOf(listener) < 0) storageChangeListeners.push(listener);
+                    },
+                    removeListener: function(listener) {
+                      var i = storageChangeListeners.indexOf(listener);
+                      if (i >= 0) storageChangeListeners.splice(i, 1);
+                    },
+                    hasListener: function(listener) { return storageChangeListeners.indexOf(listener) >= 0; }
+                  };
+                }
+                var onChanged = storageChangedEvent();
                 var local = {
                   get: function(keys, cb) {
+                    // Chrome 支持 get(callback)；此时第一个参数就是回调而不是 keys。
+                    if (typeof keys === 'function') { cb = keys; keys = null; }
+                    var defaults = (keys && !Array.isArray(keys) && typeof keys === 'object') ? keys : null;
                     var want = null;
                     if (typeof keys === 'string') want = [keys];
                     else if (Array.isArray(keys)) want = keys;
                     else if (keys && typeof keys === 'object') want = Object.keys(keys);
+                    function withDefaults(data) {
+                      if (!defaults) return data || {};
+                      var out = {};
+                      Object.keys(defaults).forEach(function(k){ out[k] = defaults[k]; });
+                      Object.keys(data || {}).forEach(function(k){ out[k] = data[k]; });
+                      return out;
+                    }
                     // 无回调 → Promise 模式（现代扩展用 chrome.storage.local.get(...).then()）
                     var hasCb = typeof cb === 'function';
                     if (hasCb) { doGet(want, cb); return; }
@@ -335,7 +448,7 @@ class ExtensionRuntime(
                       var id = nextId();
                       window.__gmCallbacks[id] = function(res){
                         window.__gmCallbacks[id] = null;
-                        try { var o = JSON.parse(res); resolve(o && o.data ? o.data : {}); }
+                        try { var o = JSON.parse(res); resolve(withDefaults(o && o.data ? o.data : {})); }
                         catch(e){ resolve({}); }
                       };
                       fireGet(want, id);
@@ -345,7 +458,7 @@ class ExtensionRuntime(
                       var id = nextId();
                       window.__gmCallbacks[id] = function(res){
                         window.__gmCallbacks[id] = null;
-                        try { var o = JSON.parse(res); cbFn(o && o.data ? o.data : {}); } catch(e){ cbFn({}); }
+                        try { var o = JSON.parse(res); cbFn(withDefaults(o && o.data ? o.data : {})); } catch(e){ cbFn(withDefaults({})); }
                       };
                       fireGet(wantKeys, id);
                     }
@@ -397,9 +510,10 @@ class ExtensionRuntime(
                     }
                   }
                 };
-                local.onChanged = { addListener: function(){}, removeListener: function(){} };
+                // 新版 Chrome 同时提供 storage.onChanged 与 StorageArea.onChanged。
+                local.onChanged = onChanged;
                 // chrome.storage.local（标准）；sync/managed 也落到同一份本地存储
-                return { local: local, sync: local, managed: local };
+                return { local: local, sync: local, managed: local, onChanged: onChanged };
               }
               function makeGmApi() {
                 // GM_setValue 落盘走 Bridge（原生 extStorageSet 需 _cb 回执，fire-and-forget 也发一个）
@@ -411,89 +525,57 @@ class ExtensionRuntime(
                     XVerseNative.call('extStorageSet', JSON.stringify(pl));
                   } catch(e) {}
                 }
-                // GM_xmlhttpRequest 简易 GET 子集；支持 responseType:'blob'（媒体抓取需要），
-                // 其余 method/超时等打日志 no-op。
-                // 注意：跨源（pbs.twimg.com）时浏览器 CORS 会拦 XHR 的 responseType，此时
-                // onload 里 x.response 为 null / x.status=0。blob 请求改走原生直链下载
-                // （extDownloadUrl，OkHttp 服务端无 CORS），由 shim 的 GM_download 实现绕开。
+                // GM.xmlHttpRequest 统一走原生 HTTPS 通道，绕过页面 CORS。
+                // 同时兼容回调式 GM_xmlhttpRequest 与 Promise 式 GM.xmlHttpRequest。
                 function gmXhr(details) {
-                  if (!details || (details.method && details.method.toUpperCase() !== 'GET')) {
-                    console.log('[XV-EXT] GM_xmlhttpRequest 仅支持 GET（' + (details ? details.method : '') + '）');
-                    if (details && details.onerror) details.onerror({ error: 'unsupported method' });
-                    return;
-                  }
-                  var wantBlob = details.responseType === 'blob';
-                  var x = new XMLHttpRequest();
-                  try {
-                    x.open('GET', details.url, true);
-                  } catch(e) {
-                    if (details.onerror) details.onerror({ error: String(e) });
-                    return;
-                  }
-                  if (wantBlob) { try { x.responseType = 'blob'; } catch(e) {} }
-                  if (details.headers) {
-                    for (var hk in details.headers) {
-                      if (details.headers.hasOwnProperty(hk)) {
-                        try { x.setRequestHeader(hk, String(details.headers[hk])); } catch(e) {}
-                      }
+                  details = details || {};
+                  var aborted = false;
+                  var rejectPromise;
+                  var promise = new Promise(function(resolve, reject) {
+                    rejectPromise = reject;
+                    var data = details.data;
+                    if (data != null && typeof data !== 'string') {
+                      try { data = JSON.stringify(data); } catch(e) { data = String(data); }
                     }
-                  }
-                  if (wantBlob) {
-                    // 关键：WebView 里 blob 响应必须用 onload/onerror 事件，不能用
-                    // onreadystatechange 手动状态机（实测 rs=4 时 response 为空，onload 永不触发，
-                    // 卡在“提取画质/0 速度”）。onload 直接拿完整 Blob 最稳。
-                    x.onload = function() {
+                    extCall('extHttp', {
+                      extId: EXT_ID,
+                      url: String(details.url || ''),
+                      method: String(details.method || 'GET'),
+                      headers: details.headers || {},
+                      data: data == null ? '' : data,
+                      responseType: String(details.responseType || 'text')
+                    }, function(nativeResult) {
+                      if (aborted) return;
+                      var body = nativeResult && typeof nativeResult.body === 'string' ? nativeResult.body : '';
+                      var response = body;
+                      if (details.responseType === 'json') {
+                        try { response = JSON.parse(body); } catch(e) { response = null; }
+                      }
                       var r = {
                         readyState: 4,
-                        status: x.status || 0,
-                        statusText: x.statusText,
-                        responseHeaders: x.getAllResponseHeaders() || '',
-                        responseText: '',
-                        finalUrl: details.url,
-                        response: x.response
+                        status: Number(nativeResult && nativeResult.status || 0),
+                        statusText: String(nativeResult && nativeResult.statusText || ''),
+                        responseHeaders: String(nativeResult && nativeResult.responseHeaders || ''),
+                        responseText: body,
+                        response: response,
+                        finalUrl: String(nativeResult && nativeResult.finalUrl || details.url || '')
                       };
-                      if (x.response instanceof Blob) {
-                        if (details.onload) details.onload(r);
-                      } else if (details.onerror) {
-                        details.onerror({ error: 'CORS blob blocked', status: x.status });
+                      if (nativeResult && nativeResult.ok) {
+                        if (typeof details.onload === 'function') { try { details.onload(r); } catch(e){} }
+                        resolve(r);
+                      } else {
+                        r.error = String(nativeResult && nativeResult.error || 'network error');
+                        if (typeof details.onerror === 'function') { try { details.onerror(r); } catch(e){} }
+                        reject(r);
                       }
-                    };
-                    x.onerror = function() {
-                      if (details.onerror) details.onerror({ error: 'network error', status: x.status });
-                    };
-                  } else {
-                    x.onreadystatechange = function() {
-                      if (x.readyState !== 4) return;
-                      var r = {
-                        readyState: 4,
-                        status: x.status,
-                        statusText: x.statusText,
-                        responseHeaders: x.getAllResponseHeaders() || '',
-                        responseText: x.responseText,
-                        finalUrl: details.url
-                      };
-                      if (x.status >= 200 && x.status < 300) {
-                        if (details.onload) details.onload(r);
-                      } else if (details.onerror) {
-                        details.onerror(r);
-                      }
-                    };
-                  }
-                  // 转发进度事件（X-Vault 靠它显示下载速度；blob 大文件尤其需要）
-                  try {
-                    x.onprogress = function(ev) {
-                      if (details.onprogress) {
-                        details.onprogress({
-                          loaded: ev.loaded || 0,
-                          total: ev.total || 0,
-                          lengthComputable: !!ev.lengthComputable
-                        });
-                      }
-                    };
-                  } catch(e) {}
-                  try { x.send(); } catch(e) {
-                    if (details.onerror) details.onerror({ error: String(e) });
-                  }
+                    });
+                  });
+                  promise.abort = function() {
+                    aborted = true;
+                    if (rejectPromise) { try { rejectPromise({ error: 'aborted' }); } catch(e){} }
+                    if (typeof details.onabort === 'function') { try { details.onabort(); } catch(e){} }
+                  };
+                  return promise;
                 }
                 var api = {
                   info: {
@@ -613,6 +695,27 @@ class ExtensionRuntime(
                   setValue: function(key, value) { GMCACHE[key] = value; persist(); },
                   deleteValue: function(key) { delete GMCACHE[key]; persist(); },
                   listValues: function() { return Object.keys(GMCACHE); },
+                  addValueChangeListener: function(key, listener) {
+                    var id = ++gmValueListenerSeq;
+                    gmValueListeners[id] = { key: String(key), listener: listener };
+                    return id;
+                  },
+                  removeValueChangeListener: function(id) { delete gmValueListeners[id]; },
+                  addElement: function(parent, tagName, attrs) {
+                    if (typeof parent === 'string') { attrs = tagName; tagName = parent; parent = null; }
+                    var el = document.createElement(String(tagName || 'div'));
+                    var values = attrs || {};
+                    Object.keys(values).forEach(function(key) {
+                      var value = values[key];
+                      if (key === 'textContent') el.textContent = String(value);
+                      else if (key === 'innerHTML') el.innerHTML = String(value);
+                      else if (key === 'class') el.className = String(value);
+                      else if (key === 'style' && value && typeof value === 'object') Object.assign(el.style, value);
+                      else try { el.setAttribute(key, String(value)); } catch(e) {}
+                    });
+                    (parent && parent.appendChild ? parent : (document.body || document.documentElement)).appendChild(el);
+                    return el;
+                  },
                   addStyle: function(css) {
                     var s = document.createElement('style');
                     s.setAttribute('data-xv-gm', '1');
@@ -630,12 +733,17 @@ class ExtensionRuntime(
                   },
                   registerMenuCommand: function(){},
                   unregisterMenuCommand: function(){},
+                  openInTab: function(url) {
+                    try { window.open(String(url || ''), '_blank'); } catch(e) { location.href = String(url || ''); }
+                    return { close: function(){}, closed: false, onclose: null };
+                  },
                   setClipboard: function(text) {
                     try {
                       if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text);
                     } catch(e) {}
                   },
-                  xmlhttpRequest: gmXhr
+                  xmlhttpRequest: gmXhr,
+                  xmlHttpRequest: gmXhr
                 };
                 // 同时暴露到 window（无 chrome.* 命名空间时脚本直接调用 GM_*）
                 window.GM_info = api.info;
@@ -643,13 +751,17 @@ class ExtensionRuntime(
                 window.GM_setValue = api.setValue;
                 window.GM_deleteValue = api.deleteValue;
                 window.GM_listValues = api.listValues;
+                window.GM_addValueChangeListener = api.addValueChangeListener;
+                window.GM_removeValueChangeListener = api.removeValueChangeListener;
+                window.GM_addElement = api.addElement;
                 window.GM_addStyle = api.addStyle;
                 window.GM_log = api.log;
                 window.GM_notification = api.notification;
                 window.GM_registerMenuCommand = api.registerMenuCommand;
                 window.GM_unregisterMenuCommand = api.unregisterMenuCommand;
+                window.GM_openInTab = api.openInTab;
                 window.GM_setClipboard = api.setClipboard;
-                window.GM_xmlhttpRequest = api.xmlhttpRequest;
+                window.GM_xmlhttpRequest = api.xmlHttpRequest;
                 window.GM_download = api.download;
                 return api;
               }
@@ -794,6 +906,8 @@ class ExtensionRuntime(
                 declarativeNetRequest: makeNoop(['updateDynamicRules','updateSessionRules','getSessionRules']),
                 gm: makeGmApi()
               };
+              // 油猴现代 Promise API 使用全局 GM；旧式 GM_* 已由 makeGmApi 同步挂载。
+              window.GM = base.gm;
               // 合并进已有 window.chrome（保留 WebView 自带 chrome.webview 等），否则新建
               if (window.chrome && typeof window.chrome === 'object') {
                 for (var k in base) {
@@ -1011,6 +1125,7 @@ class ExtensionRuntime(
 
     /** 主页面 Bridge 注册扩展存储三件套（由 BrowserViewModel 调用，传主页面 bridge） */
     fun registerStorageHandlers(bridge: Bridge) {
+        storageBridges.add(bridge)
         bridge.register("extStorageGet") { payload, reply ->
             val extId = payload.optString("extId")
             val keys = payload.optJSONArray("keys")
@@ -1035,24 +1150,100 @@ class ExtensionRuntime(
             val items = payload.optJSONObject("items")
             val cbId = payload.optString("_cb")
             if (cbId.isBlank()) { reply(JSONObject().put("ok", false).put("error", "no cb")); return@register }
+            val changes = JSONObject()
             if (items != null) {
                 val data = loadStorage(extId)
-                items.keys().forEach { k -> data.put(k, items.get(k)) }
+                items.keys().forEach { k ->
+                    val change = JSONObject()
+                    if (data.has(k)) change.put("oldValue", data.get(k))
+                    change.put("newValue", items.get(k))
+                    changes.put(k, change)
+                    data.put(k, items.get(k))
+                }
                 saveStorage(extId, data)
             }
             reply(JSONObject().put("ok", true))
+            if (changes.length() > 0) broadcastStorageChanges(extId, changes)
         }
         bridge.register("extStorageRemove") { payload, reply ->
             val extId = payload.optString("extId")
             val keys = payload.optJSONArray("keys")
             val cbId = payload.optString("_cb")
             if (cbId.isBlank()) { reply(JSONObject().put("ok", false).put("error", "no cb")); return@register }
+            val changes = JSONObject()
             if (keys != null) {
                 val data = loadStorage(extId)
-                for (i in 0 until keys.length()) data.remove(keys.optString(i))
+                for (i in 0 until keys.length()) {
+                    val key = keys.optString(i)
+                    if (data.has(key)) {
+                        changes.put(key, JSONObject().put("oldValue", data.get(key)))
+                        data.remove(key)
+                    }
+                }
                 saveStorage(extId, data)
             }
             reply(JSONObject().put("ok", true))
+            if (changes.length() > 0) broadcastStorageChanges(extId, changes)
+        }
+        // 用户脚本跨域请求：仅允许 HTTPS，异步 OkHttp 执行，避免阻塞 WebView 主线程。
+        bridge.register("extHttp") { payload, reply ->
+            val url = payload.optString("url")
+            val method = payload.optString("method", "GET").uppercase()
+            if (!url.startsWith("https://", ignoreCase = true)) {
+                reply(JSONObject().put("ok", false).put("error", "only https is allowed"))
+                return@register
+            }
+            if (method !in setOf("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE")) {
+                reply(JSONObject().put("ok", false).put("error", "unsupported method"))
+                return@register
+            }
+            val headers = payload.optJSONObject("headers") ?: JSONObject()
+            val data = payload.optString("data")
+            val contentType = headers.optString("Content-Type")
+                .ifBlank { headers.optString("content-type") }
+                .ifBlank { "application/json; charset=utf-8" }
+            val request = runCatching {
+                val builder = Request.Builder().url(url)
+                headers.keys().forEach { name ->
+                    if (!name.equals("host", true) && !name.equals("content-length", true)) {
+                        builder.header(name, headers.optString(name))
+                    }
+                }
+                val body = if (method == "GET" || method == "HEAD") {
+                    null
+                } else {
+                    data.toRequestBody(contentType.toMediaTypeOrNull())
+                }
+                builder.method(method, body).build()
+            }.getOrElse { error ->
+                reply(JSONObject().put("ok", false).put("error", error.message ?: "invalid request"))
+                return@register
+            }
+            val requestHost = runCatching { request.url.host }.getOrDefault("unknown")
+            userScriptHttpClient.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: java.io.IOException) {
+                    LogStore.log(LogCategory.FILTER, "用户脚本网络失败: $method $requestHost (${e.message})")
+                    reply(JSONObject().put("ok", false).put("error", e.message ?: "network error"))
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    response.use { res ->
+                        val body = runCatching { res.body.string() }.getOrElse { "" }
+                        val responseHeaders = buildString {
+                            res.headers.forEach { (name, value) -> append(name).append(": ").append(value).append("\r\n") }
+                        }
+                        reply(
+                            JSONObject()
+                                .put("ok", true)
+                                .put("status", res.code)
+                                .put("statusText", res.message)
+                                .put("responseHeaders", responseHeaders)
+                                .put("body", body)
+                                .put("finalUrl", res.request.url.toString()),
+                        )
+                    }
+                }
+            })
         }
         // GM_download http/https 直链 → 原生 OkHttp 下载 → MediaStore 公共目录（相册可见）。
         // 新 shim 的 GM_download 该调用不带 _cb（fire-and-forget，onload 由 JS 侧同步触发），
@@ -1064,15 +1255,14 @@ class ExtensionRuntime(
                 LogStore.log(LogCategory.FILTER, "extDownloadUrl 参数缺失: url=$url name=$fileName")
                 reply(JSONObject().put("ok", false).put("error", "missing url/name")); return@register
             }
-            val media = MediaItem(url = url, fileName = fileName)
-            // 桥回调在主线程，下载走协程封装（低频大文件下载，阻塞可接受）
-            val ok = kotlinx.coroutines.runBlocking {
-                downloadController.enqueueDownloadUrl(url, fileName, media)
+            val media = extensionMediaItem(url, fileName)
+            runtimeScope.launch {
+                val ok = downloadController.enqueueDownloadUrl(url, fileName, media)
+                reply(JSONObject().put("ok", ok).put("error", if (ok) "" else "enqueue failed"))
             }
-            reply(JSONObject().put("ok", ok).put("error", if (ok) "" else "enqueue failed"))
         }
         // GM_download blob:/data: → 页面分块 base64 经桥（extDownloadChunk）累积组装，落 MediaStore。
-        // 无大小上限（绕开 Binder 1MB 限），适用于 ZIP 包/多图。
+        // 单会话限制 32 MB，避免异常脚本持续推送导致进程内存耗尽；大文件应使用 URL 流式通道。
         // 同样 fire-and-forget：不带 _cb，不要求回调。
         bridge.register("extDownloadChunk") { payload, reply ->
             val fileName = payload.optString("fileName")
@@ -1085,25 +1275,75 @@ class ExtensionRuntime(
             }
             // 惰性清理：分块中断（页面刷新/脚本重载）后 session 不再收到分块，10 分钟无活动即回收，
             // 避免未收尾的下载会话常驻内存
-            val now = System.currentTimeMillis()
-            chunkSessions.entries.removeIf { now - it.value.lastActive > 600_000 }
-            val session = chunkSessions.getOrPut(fileName) { ChunkSession(fileName, url) }
-            session.append(chunk, isLast)
+            val session = chunkSessions.getOrPut(fileName) {
+                ChunkSession(fileName, url).also { created -> scheduleChunkSessionCleanup(fileName, created) }
+            }
+            if (!session.append(chunk)) {
+                chunkSessions.remove(fileName, session)
+                chunkCleanupJobs.remove(fileName)?.cancel()
+                reply(JSONObject().put("ok", false).put("error", "download data is invalid or exceeds 32 MB"))
+                return@register
+            }
             if (isLast) {
-                val bytes = session.toBytes()
-                chunkSessions.remove(fileName)
-                if (bytes == null) {
-                    reply(JSONObject().put("ok", false).put("error", "chunk base64 解码失败")); return@register
+                chunkSessions.remove(fileName, session)
+                chunkCleanupJobs.remove(fileName)?.cancel()
+                runtimeScope.launch {
+                    val bytes = session.toBytes()
+                    if (bytes == null) {
+                        reply(JSONObject().put("ok", false).put("error", "chunk assembly failed"))
+                        return@launch
+                    }
+                    val media = extensionMediaItem(url, fileName)
+                    val ok = downloadController.enqueueDownloadBytes(bytes, fileName, media)
+                    reply(JSONObject().put("ok", ok).put("error", if (ok) "" else "enqueue failed"))
                 }
-                val media = MediaItem(url = url, fileName = fileName)
-                val ok = kotlinx.coroutines.runBlocking {
-                    downloadController.enqueueDownloadBytes(bytes, fileName, media)
-                }
-                reply(JSONObject().put("ok", ok).put("error", if (ok) "" else "enqueue failed"))
             } else {
                 reply(JSONObject().put("ok", true).put("index", index))
             }
         }
+    }
+
+    private fun scheduleChunkSessionCleanup(fileName: String, session: ChunkSession) {
+        chunkCleanupJobs[fileName]?.cancel()
+        chunkCleanupJobs[fileName] = runtimeScope.launch {
+            while (true) {
+                delay(CHUNK_SESSION_TTL_MS)
+                if (System.currentTimeMillis() - session.lastActive < CHUNK_SESSION_TTL_MS) continue
+                chunkSessions.remove(fileName, session)
+                chunkCleanupJobs.remove(fileName)
+                break
+            }
+        }
+    }
+
+    private fun extensionMediaItem(url: String, fileName: String): MediaItem {
+        val extension = fileName.substringAfterLast('.', "bin").lowercase()
+        val mediaType = when (extension) {
+            "jpg", "jpeg", "png", "webp", "heic", "bmp", "avif" -> "photo"
+            "gif" -> "gif"
+            "mp4", "mov", "webm", "mkv", "avi", "3gp", "m4v" -> "video"
+            else -> "file"
+        }
+        return MediaItem(
+            url = url,
+            extension = extension,
+            mediaType = mediaType,
+            fileName = fileName,
+        )
+    }
+
+    private companion object {
+        const val CHUNK_SESSION_TTL_MS = 10 * 60 * 1000L
+    }
+
+    /** 把配置页的 storage 写入同步广播给主页面及其他同扩展页面。 */
+    private fun broadcastStorageChanges(extId: String, changes: JSONObject) {
+        val payload = JSONObject()
+            .put("extId", extId)
+            .put("areaName", "local")
+            .put("changes", changes)
+        val bridges = synchronized(storageBridges) { storageBridges.toList() }
+        bridges.forEach { it.emit("extStorageChanged", payload) }
     }
 
     private fun storageFile(extId: String): File {
@@ -1129,7 +1369,7 @@ class ExtensionRuntime(
         }
     }
 
-    /** 是否在卸载时清理扩展目录 */
+    /** 卸载时只清理扩展目录；已剥离到设置页的集成规则保持不变。 */
     fun deleteExtensionData(extId: String) {
         try {
             val d = extDir(extId)

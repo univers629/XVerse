@@ -5,17 +5,18 @@ import android.net.Uri
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
+import androidx.core.net.toUri
 import com.xverse.app.core.data.db.DownloadStatus
 import com.xverse.app.core.data.db.DownloadTask
 import com.xverse.app.core.data.repo.DownloadRepo
 import com.xverse.app.core.log.LogCategory
 import com.xverse.app.core.log.LogStore
-import java.io.File
 import java.io.IOException
 import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -49,6 +50,11 @@ class Downloader(
     /** 请求暂停任务（读循环会尽快中断） */
     fun requestPause(taskId: Long) {
         paused.add(taskId)
+    }
+
+    /** 恢复/重试前清除尚未被旧 Worker 消费的暂停信号。 */
+    fun clearPause(taskId: Long) {
+        paused.remove(taskId)
     }
 
     /**
@@ -93,10 +99,7 @@ class Downloader(
                     repo.update(latest().copy(status = DownloadStatus.FAILED, error = "HTTP ${resp.code}"))
                     return@withContext DownloadStatus.FAILED
                 }
-                val body = resp.body ?: run {
-                    repo.update(latest().copy(status = DownloadStatus.FAILED, error = "响应为空"))
-                    return@withContext DownloadStatus.FAILED
-                }
+                val body = resp.body
                 // 服务器忽略 Range 返回 200：从头重写（SAF 追加模式下忽略截断）
                 if (resp.code == 200) offset = 0
                 val total = if (resp.code == 206) {
@@ -106,7 +109,7 @@ class Downloader(
                 } else {
                     body.contentLength()
                 }
-                val out = target.openAppend()
+                val out = target.openOutput(append = offset > 0)
                 var done = offset
                 val buf = ByteArray(64 * 1024)
                 var lastReport = 0L
@@ -168,6 +171,8 @@ class Downloader(
                 ))
                 LogStore.log(LogCategory.DOWNLOAD, "下载完成: ${task.fileName}（${finalSize / 1024} KB）")
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             LogStore.error("下载失败: ${task.fileName}", e)
             repo.update(latest().copy(status = DownloadStatus.FAILED, error = e.message ?: "下载失败"))
@@ -187,17 +192,20 @@ class Downloader(
     }
 
     private suspend fun resolveTarget(task: DownloadTask): Target {
-        // 主路径：写入系统相册（Pictures|Movies/XVerse），相册立即可见，无需任何存储权限
+        // 用户已选目录时走 SAF；未配置时回退系统相册（Pictures|Movies/XVerse）。
+        if (task.dirPath.startsWith("content://")) {
+            return DocumentTarget(context, task.dirPath.toUri(), task.fileName)
+        }
         return MediaStoreTarget(context, task.fileName, mediaType(task.fileName))
     }
 
     /** 由文件名后缀推断媒体类型（决定 MediaStore 集合：图片→Pictures，视频→Movies） */
     private fun mediaType(fileName: String): String {
         val ext = fileName.substringAfterLast('.', "").lowercase()
-        return if (ext in setOf("mp4", "mov", "webm", "mkv", "avi", "3gp", "m4v")) {
-            "video"
-        } else {
-            "image"
+        return when (ext) {
+            "mp4", "mov", "webm", "mkv", "avi", "3gp", "m4v" -> "video"
+            "jpg", "jpeg", "png", "gif", "webp", "heic", "bmp", "avif" -> "image"
+            else -> "file"
         }
     }
 
@@ -209,25 +217,13 @@ class Downloader(
         /** 已存在字节数（断点续传起点） */
         fun size(): Long
         /** 打开追加写输出流 */
-        fun openAppend(): OutputStream
+        fun openOutput(append: Boolean): OutputStream
         /** 完成后的可读位置：FileTarget→文件，DocumentTarget→文档 URI，MediaStoreTarget→插入的媒体 URI */
         fun readUri(context: Context): android.net.Uri?
         /** 写完后收尾：MediaStore 清除 IS_PENDING，让系统相册立即可见 */
         fun finalizeWrite() {}
         /** 中断/失败时清理：MediaStore 删除未完成的悬挂条目 */
         fun abort() {}
-    }
-
-    private class FileTarget(private val file: File) : Target {
-        override fun size(): Long = if (file.exists()) file.length() else 0
-        override fun openAppend(): OutputStream = file.outputStream()
-        fun file(): File = file
-        override fun readUri(context: Context): android.net.Uri? =
-            if (file.exists() && file.length() > 0) {
-                androidx.core.content.FileProvider.getUriForFile(
-                    context, context.packageName + ".fileprovider", file
-                )
-            } else null
     }
 
     private class DocumentTarget(context: Context, treeUri: Uri, fileName: String) : Target {
@@ -248,10 +244,9 @@ class Downloader(
             return 0
         }
 
-        override fun openAppend(): OutputStream {
+        override fun openOutput(append: Boolean): OutputStream {
             val uri = doc?.uri ?: throw IOException("SAF 目标不可用")
-            // "wa" = 写 + 追加模式，续传时写入已有内容末尾
-            return resolver.openOutputStream(uri, "wa")
+            return resolver.openOutputStream(uri, if (append) "wa" else "wt")
                 ?: throw IOException("无法打开输出流")
         }
 
@@ -270,19 +265,29 @@ class Downloader(
     ) : Target {
         private val resolver = context.contentResolver
         private val isVideo = mediaType == "video"
+        private val isImage = mediaType == "image"
         private val displayName = fileName
-        private val mimeType = if (isVideo) "video/mp4" else "image/jpeg"
+        private val mimeType = android.webkit.MimeTypeMap.getSingleton()
+            .getMimeTypeFromExtension(fileName.substringAfterLast('.', "").lowercase())
+            ?: "application/octet-stream"
         private var insertedUri: android.net.Uri? = null
         private val values = android.content.ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
             put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-            put(MediaStore.MediaColumns.RELATIVE_PATH, if (isVideo) "Movies/XVerse" else "Pictures/XVerse")
+            put(
+                MediaStore.MediaColumns.RELATIVE_PATH,
+                when {
+                    isVideo -> "Movies/XVerse"
+                    isImage -> "Pictures/XVerse"
+                    else -> "Download/XVerse"
+                },
+            )
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
-        private val collectionUri: android.net.Uri = if (isVideo) {
-            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        } else {
-            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        private val collectionUri: android.net.Uri = when {
+            isVideo -> MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            isImage -> MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            else -> MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
         }
 
         override fun size(): Long {
@@ -300,7 +305,7 @@ class Downloader(
             return 0
         }
 
-        override fun openAppend(): OutputStream {
+        override fun openOutput(append: Boolean): OutputStream {
             // MediaStore 无法可靠续传：始终从头部新建条目
             val uri = resolver.insert(collectionUri, values)
                 ?: throw IOException("MediaStore 插入失败")

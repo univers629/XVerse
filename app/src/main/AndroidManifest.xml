@@ -16,10 +16,11 @@
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:supportsRtl="true"
         android:usesCleartextTraffic="false"
-        android:theme="@style/Theme.XVerse"
-        android:enableOnBackInvokedCallback="true">
+        android:theme="@style/Theme.XVerse">
 
         <activity
             android:name=".MainActivity"
@@ -32,15 +33,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <!-- 深链：x.com / twitter.com 外部链接在 app 内打开 -->
-            <intent-filter>
+            <intent-filter android:autoVerify="false">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="https" android:host="x.com" />
-                <data android:scheme="https" android:host="twitter.com" />
-                <data android:scheme="https" android:host="www.x.com" />
-                <data android:scheme="https" android:host="www.twitter.com" />
-                <data android:scheme="https" android:host="mobile.twitter.com" />
+                <data android:scheme="https" />
+                <data android:host="x.com" />
+                <data android:host="twitter.com" />
+                <data android:host="www.x.com" />
+                <data android:host="www.twitter.com" />
+                <data android:host="mobile.twitter.com" />
             </intent-filter>
             <!-- 扩展包：.crx / .zip 文件在文件管理器中「用 XVerse 打开」→ 直接导入。
                  仅声明具体 MIME，避免占用所有文件类型 -->

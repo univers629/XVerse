@@ -288,11 +288,12 @@
     }
   })();
   // 周期自愈：页面 SPA 重建 / 原型被替换后恢复 patch
-  setInterval(function () {
+  var watchdog = setInterval(function () {
     if (!installed) install();
     else if (!window.__xvFetchAdHooked || !window.__xvXhrAdHooked) {
       installed = false;
       install();
     }
   }, 5000);
+  window.addEventListener('pagehide', function () { clearInterval(watchdog); }, { once: true });
 })();

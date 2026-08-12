@@ -19,11 +19,11 @@ class FilterScript(private val context: Context) {
      *    Mutation 兜底处理遗漏/新形式广告。
      * [ccVideos]：过滤带字幕（CC）视频（广告过滤子项）。mutation 层默认即过滤（不注入也能过滤），
      * 关闭时需注入标记关闭——不依赖此注入值，仅用于 BrowserViewModel 决定是否注入关闭标记。
-     * [aiLabel]：过滤 AI 生成标签（Made with AI，广告过滤子项）。同样默认过滤，关闭时注入关闭标记。
+     * [aiLabel]：过滤 AI 生成标签（Made with AI，广告过滤子项），首次安装默认关闭。
      */
-    fun builtinEarlyScripts(mode: String = "mask", ccVideos: Boolean = true, aiLabel: Boolean = true): List<String> {
+    fun builtinEarlyScripts(mode: String = "mask", ccVideos: Boolean = true, aiLabel: Boolean = false): List<String> {
         val scripts = mutableListOf<String>()
-        // CC/AI 过滤默认开：mutation 层不注入标记即过滤（window.__xvFilterCc/__xvFilterAi 未定义）
+        // Mutation 层不注入标记即执行过滤；首次安装时 AI 默认关闭，因此注入关闭标记。
         if (!ccVideos) scripts.add(ccDisabledScript()) // 关闭才注入标记（原始 JS 文本，不经 loadAsset）
         if (!aiLabel) scripts.add(aiDisabledScript())
         val paths = mutableListOf("scripts/filter/anti-promo-css.js")
@@ -36,25 +36,46 @@ class FilterScript(private val context: Context) {
     /** 由用户规则生成 JS（追加到 mutation 层：REGEX 关键词/用户名） */
     fun userRuleScript(rules: List<FilterRule>): String {
         val regexRules = rules.filter { it.type == RuleType.REGEX && it.enabled }
-        if (regexRules.isEmpty()) return ""
-        val patterns = regexRules.map { it.pattern }
+        val patterns = regexRules
+            .map { if (it.builtin) it.pattern else escapeRegex(it.pattern) }
             .filter { it.isNotBlank() }
-            .joinToString("|") { escapeRegex(it) }
-        if (patterns.isBlank()) return ""
+            .joinToString("|")
         return """
-            // 用户自定义过滤规则
+            // 推广关键词 + 用户自定义关键词；重复执行时先撤销旧规则，保证停用/删除立即生效。
             (function(){
               'use strict';
-              // 依赖 mutation 层注入的共享卡片工具 window.__xvFilterCard（加载顺序保证在其后）
+              if (window.__xvUserRuleTimer) {
+                clearInterval(window.__xvUserRuleTimer);
+                window.__xvUserRuleTimer = 0;
+              }
+              if (!window.__xvUserRuleCleanupInstalled) {
+                window.__xvUserRuleCleanupInstalled = true;
+                window.addEventListener('pagehide', function(){
+                  clearInterval(window.__xvUserRuleTimer);
+                  window.__xvUserRuleTimer = 0;
+                }, {once:true});
+              }
               if (!window.__xvFilterCard) return;
-              var re = new RegExp('${escapeJs(patterns)}', 'i');
-              var iv = setInterval(function(){
+              var old = document.querySelectorAll('article[data-xverse-user-hidden]');
+              for (var oi = 0; oi < old.length; oi++) {
+                var oa = old[oi];
+                delete oa.dataset.xverseUserHidden;
+                oa.style.visibility = '';
+                if (oa.__xvCard) { oa.__xvCard.remove(); oa.__xvCard = null; }
+                if (oa.__xvRehide) { oa.__xvRehide.remove(); oa.__xvRehide = null; }
+                delete oa.dataset.xverseRevealed;
+              }
+              var source = '${escapeJs(patterns)}';
+              if (!source) return;
+              var re = new RegExp(source, 'i');
+              function applyRules(){
                 var arts = document.querySelectorAll('article[data-testid="tweet"]');
                 var i, a, t, u;
                 for (i = 0; i < arts.length; i++) {
                   a = arts[i];
                   // 已遮罩（广告层或本层）则跳过；命中规则 → 复用共享卡片（可点击验证）
-                  if (a.dataset.xverseUserHidden || a.dataset.xverseHidden) continue;
+                  if (a.dataset.xverseUserHidden || a.dataset.xverseHidden ||
+                      a.dataset.xverseCcHidden || a.dataset.xverseAiHidden) continue;
                   t = (a.innerText || '');
                   u = '';
                   var links = a.querySelectorAll('a[href^="/"]');
@@ -68,8 +89,9 @@ class FilterScript(private val context: Context) {
                     window.__xvFilterCard.hide(a, '命中屏蔽词 · 点击查看', 'xverseUserHidden');
                   }
                 }
-              }, 2000);
-              window.addEventListener('pagehide', function(){ clearInterval(iv); });
+              }
+              applyRules();
+              window.__xvUserRuleTimer = setInterval(applyRules, 2000);
             })();
         """.trimIndent()
     }
@@ -77,15 +99,34 @@ class FilterScript(private val context: Context) {
     /** 用户自定义 CSS 规则 */
     fun userCss(rules: List<FilterRule>): String {
         val cssRules = rules.filter { it.type == RuleType.CSS && it.enabled }
-            .map { it.pattern.trim() }
-            .filter { it.isNotBlank() }
-        if (cssRules.isEmpty()) return ""
+            .mapNotNull { ContentFilterRuleParser.cosmeticSelector(it.pattern) }
         // 双引号/反斜杠需转义，避免破坏外层 JS 字符串字面量
         val joined = cssRules.joinToString("\\n") { escapeJs(it) }
         return """
             (function(){
               'use strict';
+              var old = document.getElementById('xverse-user-filter-css');
+              if (old) old.remove();
+              if (!"${escapeJs(joined)}") return;
               var s = document.createElement('style');
+              s.id = 'xverse-user-filter-css';
+              s.textContent = "$joined";
+              (document.head || document.documentElement).appendChild(s);
+            })();
+        """.trimIndent()
+    }
+
+    /** 用户下载的过滤扩展所带、且明确作用于 x.com/twitter.com 的默认元素隐藏规则。 */
+    fun extensionDefaultCss(selectors: List<String>): String {
+        val joined = selectors.distinct().joinToString("\\n") { escapeJs(it) }
+        return """
+            (function(){
+              'use strict';
+              var old = document.getElementById('xverse-extension-default-css');
+              if (old) old.remove();
+              if (!"${escapeJs(joined)}") return;
+              var s = document.createElement('style');
+              s.id = 'xverse-extension-default-css';
               s.textContent = "$joined";
               (document.head || document.documentElement).appendChild(s);
             })();
@@ -93,12 +134,17 @@ class FilterScript(private val context: Context) {
     }
 
     /** 组装全部 early 脚本（含规则），返回注入列表 */
-    fun buildEarlyScripts(userRules: List<FilterRule>, mode: String = "mask", ccVideos: Boolean = true, aiLabel: Boolean = true): List<String> {
+    fun buildEarlyScripts(
+        userRules: List<FilterRule>,
+        mode: String = "mask",
+        ccVideos: Boolean = true,
+        aiLabel: Boolean = false,
+        extensionCssSelectors: List<String> = emptyList(),
+    ): List<String> {
         val scripts = builtinEarlyScripts(mode, ccVideos, aiLabel).toMutableList()
-        val userScript = userRuleScript(userRules)
-        if (userScript.isNotBlank()) scripts.add(userScript)
-        val userCssScript = userCss(userRules)
-        if (userCssScript.isNotBlank()) scripts.add(userCssScript)
+        scripts.add(userRuleScript(userRules))
+        scripts.add(userCss(userRules))
+        scripts.add(extensionDefaultCss(extensionCssSelectors))
         return scripts
     }
 
@@ -134,11 +180,17 @@ class FilterScript(private val context: Context) {
 
     companion object {
         private fun escapeRegex(s: String): String {
-            return s.replace("\\", "\\\\")
-                .replace("|", "\\|")
-                .replace("(", "\\(")
-                .replace(")", "\\)")
-                .replace("*", ".*")
+            return buildString {
+                s.forEach { ch ->
+                    when (ch) {
+                        '*' -> append(".*")
+                        '\\', '.', '^', '$', '+', '?', '(', ')', '[', ']', '{', '}', '|' -> {
+                            append('\\').append(ch)
+                        }
+                        else -> append(ch)
+                    }
+                }
+            }
         }
 
         private fun escapeJs(s: String): String {

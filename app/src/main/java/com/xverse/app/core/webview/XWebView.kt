@@ -2,6 +2,7 @@ package com.xverse.app.core.webview
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.util.AttributeSet
 import android.webkit.CookieManager
@@ -9,6 +10,9 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.ServiceWorkerClient
+import android.webkit.ServiceWorkerController
+import androidx.core.net.toUri
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewFeature
 import com.xverse.app.core.log.LogCategory
@@ -22,17 +26,8 @@ import com.xverse.app.core.util.Constants
 @SuppressLint("SetJavaScriptEnabled")
 class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context, attrs) {
 
-    /** 页面进度回调（0-100） */
-    var onProgress: ((Int) -> Unit)? = null
-
     /** 页面加载完成回调 */
     var onPageFinished: ((String) -> Unit)? = null
-
-    /** 页面标题回调 */
-    var onTitle: ((String) -> Unit)? = null
-
-    /** 导航拦截：返回 true 表示已消费（交给外部处理） */
-    var onShouldOverrideUrl: ((String) -> Boolean)? = null
 
     /** 资源拦截：返回非 null 表示由外部提供响应（扩展资源服务：/xv-ext/ 同源中继） */
     var onShouldInterceptUrl: ((String) -> android.webkit.WebResourceResponse?)? = null
@@ -46,6 +41,7 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
     }
 
     private fun configure() {
+        installServiceWorkerBlocker()
         setBackgroundColor(Color.BLACK)
         val s = settings
         s.javaScriptEnabled = true
@@ -82,10 +78,14 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
                 val url = request.url.toString()
                 // 非 http/https 协议：交给系统浏览器（twitter:// 等）
                 if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                    onShouldOverrideUrl?.invoke(url) ?: return false
+                    runCatching {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
+                    }.onFailure {
+                        LogStore.log(LogCategory.WEBVIEW, "无法打开外部链接: $url")
+                    }
                     return true
                 }
-                return onShouldOverrideUrl?.invoke(url) ?: false
+                return false
             }
 
             override fun shouldInterceptRequest(
@@ -93,6 +93,7 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
                 request: WebResourceRequest,
             ): android.webkit.WebResourceResponse? {
                 val url = request.url.toString()
+                AdNetworkBlocker.intercept(request)?.let { return it }
                 // 扩展资源服务：同源中继 https://<页面origin>/xv-ext/<id>/<path> → 本地扩展目录。
                 // 同源路径用于绕过 x.com CSP（script-src/connect-src 白名单无自定义 scheme，
                 // 但含 'self'），让扩展内容脚本的 import()/fetch() 动态加载可用。
@@ -128,14 +129,62 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
     /** 主线程读取 Cookie（供后台线程经 UiExecutor 调用） */
     fun getCookiesFor(url: String): String = CookieManager.getInstance().getCookie(url) ?: ""
 
-    /** 判断是否已登录 x.com（有 auth_token 即视为已登录） */
+    /** 判断是否已登录 x.com（ct0 访客同样存在，只有 auth_token 才代表真实登录）。 */
     fun isLoggedIn(): Boolean {
         val cookies = getCookiesFor(Constants.HOME_URL)
-        return cookies.contains("auth_token=") || cookies.contains("ct0=")
+        return cookies.contains("auth_token=")
+    }
+
+    /** 广告过滤总开关；同时作用于普通 WebView 请求与 Service Worker 请求。 */
+    fun setAdNetworkBlocking(
+        enabled: Boolean,
+        stripMode: Boolean = false,
+        rules: List<com.xverse.app.core.data.db.FilterRule> = emptyList(),
+        extensionAllowedHosts: Set<String> = emptySet(),
+        extensionBlockedHosts: Set<String> = emptySet(),
+    ) {
+        AdNetworkBlocker.configure(
+            enabled,
+            stripMode,
+            rules,
+            extensionAllowedHosts,
+            extensionBlockedHosts,
+        )
     }
 
     override fun destroy() {
+        setAdNetworkBlocking(false)
+        injector.clear()
+        stopLoading()
+        onPageFinished = null
+        onShouldInterceptUrl = null
+        removeJavascriptInterface("XVerseNative")
+        webChromeClient = android.webkit.WebChromeClient()
+        webViewClient = WebViewClient()
+        loadUrl("about:blank")
+        clearHistory()
+        removeAllViews()
         LogStore.log(LogCategory.WEBVIEW, "XWebView destroy")
         super.destroy()
+    }
+
+    companion object {
+        @Volatile
+        private var serviceWorkerBlockerInstalled = false
+
+        private fun installServiceWorkerBlocker() {
+            if (serviceWorkerBlockerInstalled) return
+            synchronized(this) {
+                if (serviceWorkerBlockerInstalled) return
+                ServiceWorkerController.getInstance().setServiceWorkerClient(
+                    object : ServiceWorkerClient() {
+                        override fun shouldInterceptRequest(request: WebResourceRequest) =
+                            AdNetworkBlocker.intercept(request)
+                    }
+                )
+                serviceWorkerBlockerInstalled = true
+                LogStore.log(LogCategory.FILTER, "Service Worker 广告请求拦截器已安装")
+            }
+        }
     }
 }

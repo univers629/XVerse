@@ -3,27 +3,42 @@ package com.xverse.app.ui.history
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.xverse.app.AppInstance
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.xverse.app.core.data.db.HistoryRecord
+import com.xverse.app.di.ServiceLocator
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 /**
  * 历史页 ViewModel：分组 / 搜索 / 删除。
  */
-class HistoryViewModel : ViewModel() {
-
-    private val locator get() = AppInstance.locator
+class HistoryViewModel(private val locator: ServiceLocator) : ViewModel() {
 
     val query = MutableStateFlow("")
+    val selectedMediaFilters = MutableStateFlow<Set<HistoryMediaFilter>>(emptySet())
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    private val source = query.flatMapLatest { q ->
-        if (q.isBlank()) locator.historyRepo.observeAll()
-        else locator.historyRepo.search(q)
+    private val source = combine(query, locator.authController.username) { q, account -> q to account }
+        .flatMapLatest { (q, account) ->
+            if (account.isBlank()) flowOf(emptyList())
+            else if (q.isBlank()) locator.historyRepo.observeForAccount(account)
+            else locator.historyRepo.search(account, q)
+    }
+
+    private val filteredSource = combine(source, selectedMediaFilters) { records, filters ->
+        if (filters.isEmpty()) records
+        else records.filter { record -> record.historyMediaFilter() in filters }
     }
 
     /** 分组的不可变快照 */
@@ -39,8 +54,9 @@ class HistoryViewModel : ViewModel() {
     private val backfilled = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
 
     init {
+        viewModelScope.launch { locator.historyRepo.backfillMediaTypes() }
         viewModelScope.launch {
-            source.collect { records ->
+            filteredSource.collect { records ->
                 _uiState.value = buildGroups(records)
                 backfillThumbnails(records)
             }
@@ -73,27 +89,41 @@ class HistoryViewModel : ViewModel() {
             }
     }
 
+    /**
+     * 按设备本地时区的自然日分组。不能用「过去 24 小时」这种滚动窗口：午夜前后的
+     * 记录必须分属两个日期，搜索结果也沿用同一规则。
+     */
     private fun buildGroups(records: List<HistoryRecord>): UiState {
         if (records.isEmpty()) return UiState()
-        val now = System.currentTimeMillis()
-        val dayMs = 86_400_000L
-        val weekMs = 7 * dayMs
-        val today = records.filter { now - it.visitedAt < dayMs }
-        val yesterday = records.filter { now - it.visitedAt < 2 * dayMs && now - it.visitedAt >= dayMs }
-        val week = records.filter { now - it.visitedAt < weekMs && now - it.visitedAt >= 2 * dayMs }
-        val earlier = records.filter { now - it.visitedAt >= weekMs }
-
-        val groups = buildList {
-            if (today.isNotEmpty()) add("今天" to today)
-            if (yesterday.isNotEmpty()) add("昨天" to yesterday)
-            if (week.isNotEmpty()) add("本周" to week)
-            if (earlier.isNotEmpty()) add("更早" to earlier)
-        }
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val dateFormatter = DateTimeFormatter.ofPattern("M月d日 EEEE", Locale.getDefault())
+        val groups = records
+            .groupBy { Instant.ofEpochMilli(it.visitedAt).atZone(zone).toLocalDate() }
+            .map { (date, dailyRecords) ->
+                val prefix = when (date) {
+                    today -> "今天"
+                    today.minusDays(1) -> "昨天"
+                    else -> date.format(DateTimeFormatter.ofPattern("yyyy年M月d日", Locale.getDefault()))
+                }
+                val label = if (date == today || date == today.minusDays(1)) {
+                    "$prefix · ${date.format(dateFormatter)}"
+                } else {
+                    "$prefix · ${date.format(DateTimeFormatter.ofPattern("EEEE", Locale.getDefault()))}"
+                }
+                label to dailyRecords
+            }
         return UiState(groups, records.size)
     }
 
     fun setQuery(q: String) {
         query.value = q
+    }
+
+    fun toggleMediaFilter(filter: HistoryMediaFilter) {
+        selectedMediaFilters.value = selectedMediaFilters.value.toMutableSet().apply {
+            if (!add(filter)) remove(filter)
+        }
     }
 
     fun delete(record: HistoryRecord) {
@@ -121,7 +151,9 @@ class HistoryViewModel : ViewModel() {
     }
 
     fun clearAll() {
-        viewModelScope.launch { locator.historyRepo.clear() }
+        val account = locator.authController.username.value
+        if (account.isBlank()) return
+        viewModelScope.launch { locator.historyRepo.clear(account) }
     }
 
     /** 点击历史项：切回首页 Tab 并瞬显推文页。
@@ -135,11 +167,28 @@ class HistoryViewModel : ViewModel() {
     }
 
     companion object {
-        val Factory = object : ViewModelProvider.Factory {
-            override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                @Suppress("UNCHECKED_CAST")
-                return HistoryViewModel() as T
+        val Factory: ViewModelProvider.Factory = viewModelFactory {
+            initializer {
+                val app = checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY])
+                HistoryViewModel((app as com.xverse.app.XVerseApp).locator)
             }
+        }
+    }
+}
+
+enum class HistoryMediaFilter { TEXT, IMAGE, VIDEO }
+
+/** GIF 按产品定义并入视频；URL 兜底兼容类型字段为空的旧记录。 */
+private fun HistoryRecord.historyMediaFilter(): HistoryMediaFilter? {
+    return when (mediaType.lowercase()) {
+        "photo", "image" -> HistoryMediaFilter.IMAGE
+        "video", "gif", "animated_gif" -> HistoryMediaFilter.VIDEO
+        else -> when {
+            mediaUrl.contains("/media/", ignoreCase = true) -> HistoryMediaFilter.IMAGE
+            mediaUrl.contains("video_thumb", ignoreCase = true) ||
+                mediaUrl.startsWith("https://video.twimg.com/", ignoreCase = true) -> HistoryMediaFilter.VIDEO
+            mediaUrl.isBlank() -> HistoryMediaFilter.TEXT
+            else -> null
         }
     }
 }

@@ -44,7 +44,7 @@ object ThumbCache {
                 val req = Request.Builder().url(url).build()
                 client.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) return@withContext ""
-                    val bytes = resp.body?.bytes() ?: return@withContext ""
+                    val bytes = resp.body.bytes()
                     if (bytes.isEmpty()) return@withContext ""
                     target.writeBytes(bytes)
                 }

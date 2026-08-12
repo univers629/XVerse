@@ -26,7 +26,7 @@ class Converters {
 
 @Database(
     entities = [HistoryRecord::class, DownloadTask::class, FilterRule::class, ExtensionEntity::class],
-    version = 10,
+    version = 11,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -152,9 +152,34 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_10_11 = object : androidx.room.migration.Migration(10, 11) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                // 历史按登录账户隔离：同一推文 URL 可以在不同账户各自保留一份。
+                // 升级前的记录没有可靠账户归属，直接清空历史表；下载、设置、扩展等其它表不受影响。
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS history_new (" +
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "url TEXT NOT NULL, " +
+                        "tweetId TEXT NOT NULL, " +
+                        "accountUsername TEXT NOT NULL DEFAULT '', " +
+                        "username TEXT NOT NULL DEFAULT '', " +
+                        "displayName TEXT NOT NULL DEFAULT '', " +
+                        "textPreview TEXT NOT NULL DEFAULT '', " +
+                        "mediaType TEXT NOT NULL DEFAULT '', " +
+                        "mediaUrl TEXT NOT NULL DEFAULT '', " +
+                        "thumbPath TEXT NOT NULL DEFAULT '', " +
+                        "visitedAt INTEGER NOT NULL)"
+                )
+                db.execSQL("DROP TABLE history")
+                db.execSQL("ALTER TABLE history_new RENAME TO history")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_history_visitedAt ON history(visitedAt)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_history_accountUsername_url ON history(accountUsername, url)")
+            }
+        }
+
         fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "xverse.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                 .fallbackToDestructiveMigration(dropAllTables = true)
                 .build()
     }

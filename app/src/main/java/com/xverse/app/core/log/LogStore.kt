@@ -6,8 +6,14 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * 环形内存日志 + 落盘文件。
@@ -36,13 +42,24 @@ object LogStore {
     private const val FILE_KEEP_DAYS = 7
 
     private val entries = ArrayDeque<LogEntry>()
-    private val idGen = AtomicInteger(0)
+    private val idGen = AtomicLong(0)
+    private val fileScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val fileQueue = Channel<LogEntry>(
+        capacity = 256,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
 
     /** UI 观察用状态流 */
     val flow = MutableStateFlow<List<LogEntry>>(emptyList())
 
     @Volatile
     private var logDir: File? = null
+
+    init {
+        fileScope.launch {
+            for (entry in fileQueue) writeEntry(entry)
+        }
+    }
 
     fun init(context: Context) {
         logDir = File(context.filesDir, "logs").apply { mkdirs() }
@@ -55,25 +72,15 @@ object LogStore {
     }
 
     fun log(category: LogCategory, message: String) {
-        val entry = LogEntry(idGen.incrementAndGet().toLong(), System.currentTimeMillis(), category, message)
+        val entry = LogEntry(idGen.incrementAndGet(), System.currentTimeMillis(), category, message)
         synchronized(this) {
             entries.addLast(entry)
             while (entries.size > RING_CAPACITY) entries.removeFirst()
+            // Flow 也必须发布有界快照；持续 append 会绕过环形缓冲并无限占用内存。
+            flow.value = entries.toList()
         }
-        flow.value = flow.value + entry
-        // 落盘（追加行）
-        val dir = logDir
-        if (dir != null) {
-            try {
-                val name = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(entry.time)) + ".log"
-                val f = File(dir, name)
-                val line = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(entry.time)) +
-                    " [${category.label}] ${entry.message}\n"
-                f.appendText(line)
-            } catch (e: Exception) {
-                Log.w("LogStore", "write log failed: ${e.message}")
-            }
-        }
+        // 有界单消费者队列：避免主线程文件 I/O，也避免日志突发时无限创建写盘协程。
+        fileQueue.trySend(entry)
         // 也打 logcat，便于 adb 排障
         val level = if (category == LogCategory.ERROR) Log.WARN else Log.INFO
         Log.println(level, "XVerse/${category.name}", message)
@@ -84,6 +91,19 @@ object LogStore {
     }
 
     fun current(): List<LogEntry> = synchronized(this) { entries.toList() }
+
+    private fun writeEntry(entry: LogEntry) {
+        val dir = logDir ?: return
+        try {
+            val name = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(entry.time)) + ".log"
+            val f = File(dir, name)
+            val line = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(entry.time)) +
+                " [${entry.category.label}] ${entry.message}\n"
+            f.appendText(line)
+        } catch (e: Exception) {
+            Log.w("LogStore", "write log failed: ${e.message}")
+        }
+    }
 
     /** 导出日志到文件，返回文件路径 */
     fun exportToFile(): String? {

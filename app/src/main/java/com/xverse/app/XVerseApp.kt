@@ -9,9 +9,4 @@ import com.xverse.app.di.ServiceLocator
  */
 class XVerseApp : Application() {
     val locator: ServiceLocator by lazy { ServiceLocator(this) }
-
-    override fun onCreate() {
-        super.onCreate()
-        AppInstance.locator = locator
-    }
 }

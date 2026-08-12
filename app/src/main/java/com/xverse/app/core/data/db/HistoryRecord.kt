@@ -10,12 +10,14 @@ import androidx.room.PrimaryKey
  */
 @Entity(
     tableName = "history",
-    indices = [Index("visitedAt"), Index("url", unique = true)],
+    indices = [Index("visitedAt"), Index(value = ["accountUsername", "url"], unique = true)],
 )
 data class HistoryRecord(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val url: String,
     val tweetId: String,
+    /** 记录所属的登录账户。未识别账户时不写入历史。 */
+    val accountUsername: String,
     val username: String = "",
     /** 展示名（如 "张三"），空则回退 @username */
     val displayName: String = "",

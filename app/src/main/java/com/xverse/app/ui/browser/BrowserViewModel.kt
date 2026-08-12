@@ -3,14 +3,23 @@ package com.xverse.app.ui.browser
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.xverse.app.AppInstance
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.core.net.toUri
 import com.xverse.app.core.data.db.HistoryRecord
 import com.xverse.app.core.data.repo.HistoryRepo
 import com.xverse.app.core.download.MediaItem
 import com.xverse.app.core.log.LogCategory
 import com.xverse.app.core.log.LogStore
+import com.xverse.app.core.search.XSearchFavorite
+import com.xverse.app.core.search.XSearchHistoryItem
+import com.xverse.app.core.search.XSearchQuery
+import com.xverse.app.core.search.XSearchStore
 import com.xverse.app.core.util.Constants
+import com.xverse.app.core.webview.JsInjector
 import com.xverse.app.core.webview.XWebView
+import com.xverse.app.core.webview.WebAppearanceScript
+import com.xverse.app.di.ServiceLocator
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -23,22 +32,24 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import java.io.File
+import java.lang.ref.WeakReference
 
 /**
  * 浏览器页 ViewModel：持有 XWebView 引用，管理历史写入、注入、登录状态。
  */
-class BrowserViewModel : ViewModel() {
+class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
 
-    var webView: XWebView? = null
+    private var webViewRef = WeakReference<XWebView>(null)
+    private val webView: XWebView? get() = webViewRef.get()
 
     /** WebView 就绪前收到的 URL（冷启动深链等）挂起，就绪后加载 */
     private var pendingUrl: String? = null
 
     val progress = MutableStateFlow(0)
-    val title = MutableStateFlow("XVerse")
-    val url = MutableStateFlow("")
     private val _loggedIn = MutableStateFlow(false)
     val loggedIn: StateFlow<Boolean> = _loggedIn
+    private var usernameProbeJob: Job? = null
+    private var loginProbeJob: Job? = null
 
     /** 顶栏下载：当前推文的媒体列表（下拉菜单数据源） */
     private val _mediaList = MutableStateFlow<List<MediaItem>>(emptyList())
@@ -48,25 +59,49 @@ class BrowserViewModel : ViewModel() {
     val parsing: StateFlow<Boolean> = _parsing
 
     private var historyJob: Job? = null
+    private var initialLoadJob: Job? = null
+    private var rebuildJob: Job? = null
+    private var filterRulesJob: Job? = null
+    private var appearanceSettingsJob: Job? = null
+    private var extensionWatchJob: Job? = null
+    private var initialized = false
+    private var legacyHistoryCleanupStarted = false
 
-    val locator get() = AppInstance.locator
+    private val xSearchStore by lazy(LazyThreadSafetyMode.NONE) {
+        XSearchStore(locator.appContext)
+    }
+    val searchHistory: StateFlow<List<XSearchHistoryItem>> get() = xSearchStore.history
+    val searchFavorites: StateFlow<List<XSearchFavorite>> get() = xSearchStore.favorites
 
     /** WebView 就绪时由 UI 调用 */
     fun onWebViewReady(view: XWebView) {
-        webView = view
+        webViewRef = WeakReference(view)
         setupBridge(view)
+    }
+
+    /** Compose 释放 AndroidView 时断开 ViewModel 与 View 的生命周期联系。 */
+    fun onWebViewReleased(view: XWebView) {
+        if (webView === view) {
+            webViewRef.clear()
+            initialized = false
+        }
     }
 
     /** 首次加载：有挂起 URL 则加载之，否则回首页 */
     fun loadInitial() {
-        viewModelScope.launch {
+        if (initialLoadJob?.isActive == true) return
+        initialLoadJob = viewModelScope.launch {
             val wv = webView ?: return@launch
             // 过滤组件初始注册须在首导航前完成，否则内置 strip/CSS 对首屏 SPA 无效
             loadFilterScripts(wv)
+            loadAppearanceScript(wv)
             // 扩展注入提供者首帧注册须在首导航前完成，否则 document_start 组内容脚本错过首屏
             loadExtensions(wv)
+            if (webView !== wv) return@launch
             val pending = pendingUrl
             pendingUrl = null
+            initialized = true
+            wv.injector.prepareForNavigation()
             wv.loadUrl(pending ?: Constants.HOME_URL)
         }
     }
@@ -74,45 +109,59 @@ class BrowserViewModel : ViewModel() {
     /** 加载 URL（WebView 未就绪则挂起待命） */
     fun loadUrl(url: String) {
         val wv = webView
-        if (wv != null) wv.loadUrl(url) else pendingUrl = url
+        if (wv != null && initialized) {
+            wv.injector.prepareForNavigation()
+            wv.loadUrl(url)
+        } else pendingUrl = url
+        if (url.contains("/i/flow/login")) scheduleLoginProbe()
+    }
+
+    /** Build history locally, collapse the native panel in UI, then open X's result route. */
+    fun executeSearch(query: String) {
+        val normalized = query.trim()
+        if (normalized.isEmpty()) return
+        xSearchStore.record(normalized)
+        loadUrl(XSearchQuery.resultUrl(normalized))
+    }
+
+    fun saveSearchFavorite(name: String, query: String) {
+        xSearchStore.addFavorite(name, query)
+    }
+
+    fun removeSearchFavorite(id: String) {
+        xSearchStore.removeFavorite(id)
+    }
+
+    fun clearSearchHistory() {
+        xSearchStore.clearHistory()
     }
 
     /** 探针模式切换后重建：清空注入列表 + reload 首页，下一整页加载即按新模式注入 */
     fun rebuildWebView() {
         val wv = webView ?: return
-        // 清空注入脚本列表（探针模式零注入 / 恢复后重新 setupBridge 挂全量）
+        initialLoadJob?.cancel()
+        initialized = true
+        rebuildJob?.cancel()
+        // 清空注入脚本列表，再按最新设置挂载全量脚本。
         wv.injector.clear()
-        if (!probeMode) {
-            // 恢复正常模式：重新挂上全部注入（setupBridge 会根据 probeMode 决定注入内容）
-            setupBridge(wv)
-            viewModelScope.launch {
-                loadFilterScripts(wv)
-                loadExtensions(wv)
-            }
-        } else {
-            setupBridge(wv)
+        wv.setAdNetworkBlocking(false)
+        setupBridge(wv)
+        rebuildJob = viewModelScope.launch {
+            loadFilterScripts(wv)
+            loadAppearanceScript(wv)
+            loadExtensions(wv)
+            if (webView !== wv) return@launch
+            wv.injector.prepareForNavigation()
+            wv.loadUrl(Constants.HOME_URL)
         }
-        // reload 首页触发整页加载，onPageStarted 按新列表注入
-        wv.post { wv.loadUrl(Constants.HOME_URL) }
     }
 
     private fun setupBridge(view: XWebView) {
-        // 探针模式（adb 广播 com.xverse.app.PROBE 切换）：纯净对照实验。
-        // 页面零注入（无过滤/恢复/hook/扩展/历史上报），只注入只读探针记录滚动轨迹，
-        // 用于对照 x.com 原生行为（scrollRestoration 默认值、返回时是否原生跳动）。
-        if (probeMode) {
-            view.injector.addEarly(PROBE_ONLY_SCRIPT)
-            // 仍需要 Bridge 暴露（探针可读 native 侧状态，但页面不注入内容脚本）
-            val bridge = com.xverse.app.core.webview.Bridge(view)
-            bridge.expose()
-            view.onProgress = { progress.value = it }
-            view.onPageFinished = { pageUrl -> this.url.value = pageUrl }
-            view.onTitle = { title.value = it }
-            return
-        }
         // SPA 返回滚动恢复：document_start 挂载，patch history 记录各路由滚动位置，
         // popstate 返回时按目标路由恢复（重试等虚拟列表渲染到位）
         view.injector.addEarly(SCROLL_RESTORE_SCRIPT)
+        // 当前账户识别：复用 X 自己 GraphQL 请求的授权头读取账户设置，不依赖易变的导航 DOM。
+        view.injector.addEarly(ACCOUNT_IDENTITY_HOOK)
         // 注入历史上报脚本
         view.injector.addLate(HISTORY_TRACKING_SCRIPT)
         // 注入 GraphQL 拦截（原生侧缓存媒体直链，供顶栏下载下拉解析命中）
@@ -141,6 +190,12 @@ class BrowserViewModel : ViewModel() {
                 }
             }
         }
+        // 用户名优先从导航栏读取；移动布局未渲染个人主页链接时，由账户设置接口异步回传。
+        bridge.register("accountName") { payload, _ ->
+            payload.optString("username").takeIf { it.isNotBlank() }?.let {
+                locator.authController.setUsername(it)
+            }
+        }
         bridge.register("getState") { payload, reply ->
             reply(org.json.JSONObject().put("ok", true).put("loggedIn", loggedIn.value))
         }
@@ -151,21 +206,20 @@ class BrowserViewModel : ViewModel() {
         // 初始注册由 loadInitial 在首导航前完成（必须早于 onPageStarted，否则首屏 SPA 不生效）；
         // 这里只挂规则变更热更新。
         watchFilterRules()
+        watchAppearanceSettings()
         // 一次性清理历史遗留：修复前的小写 mediaviewer 孤儿记录（进入媒体贴会产生
         // 「点击路径干净 URL + onPageFinished 停留路径 mediaviewer URL」的重复历史）。
-        viewModelScope.launch {
-            val removed = locator.historyRepo.deleteOrphanMediaviewer()
-            if (removed > 0) {
-                com.xverse.app.core.log.LogStore.log(
-                    com.xverse.app.core.log.LogCategory.HISTORY,
-                    "清理 mediaviewer 重复历史 $removed 条",
-                )
+        if (!legacyHistoryCleanupStarted) {
+            legacyHistoryCleanupStarted = true
+            viewModelScope.launch {
+                val removed = locator.historyRepo.deleteOrphanMediaviewer()
+                if (removed > 0) {
+                    LogStore.log(LogCategory.HISTORY, "清理 mediaviewer 重复历史 $removed 条")
+                }
             }
         }
 
-        view.onProgress = { progress.value = it }
         view.onPageFinished = { pageUrl ->
-            this.url.value = pageUrl
             refreshLoginState()
             // 推文 URL：启动 3s 停留计时。排除竖屏 mediaViewer——入口视频已由点击路径
             // （HISTORY_TRACKING_SCRIPT click handler）记录带完整正文；这里再写空正文的
@@ -174,7 +228,6 @@ class BrowserViewModel : ViewModel() {
                 scheduleHistoryWrite(pageUrl)
             }
         }
-        view.onTitle = { title.value = it }
     }
 
     /**
@@ -193,7 +246,8 @@ class BrowserViewModel : ViewModel() {
             applyExtensionProvider(wv, runtime, enabled)
         }
         // 首次注册完成后启动持续观察
-        viewModelScope.launch {
+        extensionWatchJob?.cancel()
+        extensionWatchJob = viewModelScope.launch {
             locator.extensionRepo.observeEnabled().drop(1).collect { enabled ->
                 val webView = webView ?: return@collect
                 applyExtensionProvider(webView, locator.extensionRuntime, enabled)
@@ -250,7 +304,7 @@ class BrowserViewModel : ViewModel() {
             // 允许换行（默认 maxLines=2 会被截断）
             view.maxLines = Int.MAX_VALUE
             // 限宽：超过屏幕 2/3 时按 2/3 宽度重排，让长消息自动换行
-            val maxW = (ctx.resources.displayMetrics.widthPixels * 2 / 3).toInt()
+            val maxW = ctx.resources.displayMetrics.widthPixels * 2 / 3
             view.maxWidth = maxW
             view.width = maxW
         }
@@ -276,28 +330,55 @@ class BrowserViewModel : ViewModel() {
         return try {
             val enabled = locator.settings.filterEnabled.first()
             if (!enabled) {
+                view.setAdNetworkBlocking(false)
                 LogStore.log(LogCategory.FILTER, "过滤已关闭，跳过注入")
                 return true
             }
+            locator.ensureBuiltinFilterRules()
             val rules = locator.filterRepo.getEnabled()
             val mode = locator.settings.filterMode.first()
+            val extensionDefaultsEnabled = locator.settings.filterExtensionDefaults.first()
+            val disabledExtensionGroups = locator.settings.filterExtensionDisabledGroups.first()
+            val extensionPacks = if (extensionDefaultsEnabled) {
+                locator.extensionRuntime.loadFilterPacks(disabledExtensionGroups)
+            } else {
+                emptyList()
+            }
+            val extensionAllowedHosts = extensionPacks.flatMap { it.allowedHosts }.toSet()
+            val extensionBlockedHosts = extensionPacks.flatMap { it.blockedHosts }.toSet()
+            val extensionCssSelectors = extensionPacks.flatMap { it.cssSelectors }.distinct()
+            // 总开关开启时，所有模式都启用通用广告/跟踪域名与自定义网络规则；
+            // strip 额外阻断 X 曝光端点并在 GraphQL 层删除推广条目。
+            view.setAdNetworkBlocking(
+                true,
+                stripMode = mode == "strip",
+                rules = rules,
+                extensionAllowedHosts = extensionAllowedHosts,
+                extensionBlockedHosts = extensionBlockedHosts,
+            )
             val ccVideos = locator.settings.filterCcVideos.first()
             val aiLabel = locator.settings.filterAiLabel.first()
-            // FilterScript 需要 context；AppInstance.locator 内部持有 appContext
+            // FilterScript 只持有 Application Context，用于读取 assets。
             val fs = com.xverse.app.core.webview.FilterScript(locator.appContext)
             if (reInject) {
                 // 规则变更：直接执行用户规则 + CSS（幂等，会覆盖旧匹配结果）
-                val userScript = fs.userRuleScript(rules)
-                if (userScript.isNotBlank()) view.injector.evaluate(userScript)
-                val userCss = fs.userCss(rules)
-                if (userCss.isNotBlank()) view.injector.evaluate(userCss)
+                view.injector.evaluate(fs.userRuleScript(rules))
+                view.injector.evaluate(fs.userCss(rules))
                 LogStore.log(LogCategory.FILTER, "过滤规则已热更新：x${rules.size}")
                 return true
             }
-            fs.buildEarlyScripts(rules, mode, ccVideos, aiLabel).forEach { view.injector.addEarly(it) }
+            fs.buildEarlyScripts(
+                rules,
+                mode,
+                ccVideos,
+                aiLabel,
+                extensionCssSelectors,
+            ).forEach { view.injector.addEarly(it) }
             LogStore.log(
                 LogCategory.FILTER,
-                "过滤脚本就绪（模式 $mode，CC 视频 ${if (ccVideos) "过滤" else "不过滤"}，AI 标签 ${if (aiLabel) "过滤" else "不过滤"}）：内置 + 用户规则 x${rules.size}"
+                "过滤脚本就绪（模式 $mode，CC 视频 ${if (ccVideos) "过滤" else "不过滤"}，" +
+                    "AI 标签 ${if (aiLabel) "过滤" else "不过滤"}）：内置 + 用户规则 ${rules.size}，" +
+                    "集成规则 ${extensionAllowedHosts.size + extensionBlockedHosts.size + extensionCssSelectors.size}"
             )
             true
         } catch (e: Exception) {
@@ -308,14 +389,37 @@ class BrowserViewModel : ViewModel() {
 
     /** 过滤规则变化（增删/开关）→ 热更新已加载页面，无需重载 */
     private fun watchFilterRules() {
-        viewModelScope.launch {
+        filterRulesJob?.cancel()
+        filterRulesJob = viewModelScope.launch {
             locator.filterRepo.observeAll().collect { rules ->
                 val wv = webView
-                if (wv == null || rules.isEmpty()) return@collect
+                if (wv == null) return@collect
                 // 只在页面已加载后热更新（避免首次空跑）
                 loadFilterScripts(wv, reInject = true)
             }
         }
+    }
+
+    /** 外观开关变化后同步当前页面，并替换后续导航使用的 document_start 脚本。 */
+    private fun watchAppearanceSettings() {
+        appearanceSettingsJob?.cancel()
+        appearanceSettingsJob = viewModelScope.launch {
+            locator.settings.hideXBottomBar.collect { hidden ->
+                val wv = webView ?: return@collect
+                applyAppearanceScript(wv, hidden, updateCurrentPage = initialized)
+            }
+        }
+    }
+
+    private suspend fun loadAppearanceScript(view: XWebView) {
+        applyAppearanceScript(view, locator.settings.hideXBottomBar.first(), updateCurrentPage = false)
+    }
+
+    private fun applyAppearanceScript(view: XWebView, hidden: Boolean, updateCurrentPage: Boolean) {
+        val script = WebAppearanceScript.hideXBottomBar(hidden)
+        view.injector.setEarly(WEB_APPEARANCE_SCRIPT_KEY, script)
+        if (updateCurrentPage) view.injector.evaluate(JsInjector.wrapIife(script))
+        view.injector.prepareForNavigation()
     }
     /** 刷新登录状态（主线程） */
     fun refreshLoginState() {
@@ -323,6 +427,43 @@ class BrowserViewModel : ViewModel() {
         _loggedIn.value = wv.isLoggedIn()
         // 同步到 AuthController（供设置页等共享）
         locator.authController.refresh()
+        if (_loggedIn.value) scheduleUsernameProbe()
+    }
+
+    /** X 登录完成是 SPA 跳转，未必再触发 onPageFinished；登录页期间轮询 Cookie 直至识别账户。 */
+    private fun scheduleLoginProbe() {
+        loginProbeJob?.cancel()
+        loginProbeJob = viewModelScope.launch {
+            repeat(90) {
+                delay(1000)
+                refreshLoginState()
+                if (_loggedIn.value && locator.authController.username.value.isNotBlank()) return@launch
+            }
+        }
+    }
+
+    /** 导航栏在页面完成后异步挂载，连续探测直到取到 @用户名，确保账户会话被保存。 */
+    private fun scheduleUsernameProbe() {
+        if (locator.authController.username.value.isNotBlank()) return
+        usernameProbeJob?.cancel()
+        usernameProbeJob = viewModelScope.launch {
+            repeat(15) {
+                val wv = webView ?: return@launch
+                if (!wv.isLoggedIn()) return@launch
+                // 移动/桌面布局的个人主页入口 data-testid 不同，均从其 href 取当前用户名。
+                wv.evaluateJavascript(
+                    """(function(){var a=document.querySelector('a[data-testid="AppTabBar_Profile_Link"],a[data-testid="DashButton_ProfileIcon_Link"],a[data-testid="SideNav_AccountSwitcher_Button"] a[href^="/"]');var h=(a&&a.getAttribute('href'))||'';var p=h.split(/[?#]/)[0].split('/').filter(Boolean)[0]||'';if(!p&&window.XVerseNative&&!window.__xvAccountLookup){window.__xvAccountLookup=true;var q=document.cookie.split(';').map(function(x){return x.trim();}).filter(function(x){return x.indexOf('ct0=')===0;})[0]||'';var c=q.slice(4);fetch('/i/api/1.1/account/settings.json',{credentials:'include',headers:c?{'x-csrf-token':decodeURIComponent(c)}:{}}).then(function(r){return r.json();}).then(function(j){if(j&&j.screen_name)XVerseNative.call('accountName',JSON.stringify({username:j.screen_name}));}).catch(function(){});}return /^[A-Za-z0-9_]{1,30}$/.test(p)?p:'';})()"""
+                ) { result ->
+                    val account = runCatching {
+                        org.json.JSONTokener(result).nextValue() as? String
+                    }.getOrNull().orEmpty()
+                    if (account.isNotBlank()) locator.authController.setUsername(account)
+                }
+                delay(1000)
+                if (locator.authController.username.value.isNotBlank()) return@launch
+            }
+            LogStore.log(LogCategory.AUTH, "未能从页面导航栏识别当前用户名")
+        }
     }
 
     // ---- 登录 ----
@@ -357,6 +498,9 @@ class BrowserViewModel : ViewModel() {
      */
     fun writeHistory(url: String, text: String = "", displayName: String = "", mediaUrl: String = "", fromMedia: Boolean = false) {
         viewModelScope.launch {
+            // 在任务开始时冻结账户归属；后续元数据/缩略图读取会挂起，期间切换账户也不能串写历史。
+            val accountUsername = locator.authController.username.value
+            if (accountUsername.isBlank()) return@launch
             // URL 归一化：/photo/N、/video/N、/mediaViewer 子页一律指向帖子整页（历史点击回到帖子页而非放大图）。
             // mediaViewer 的 ?currentTweet= 查询参数是当前刷到的视频，路径 /status/<id> 仍是入口帖子。
             // IGNORE_CASE：x.com 实际用小写 /mediaviewer，大小写敏感会把两条 URL 当不同记录写入，
@@ -367,8 +511,6 @@ class BrowserViewModel : ViewModel() {
                 .replace(Regex("/mediaviewer.*$", RegexOption.IGNORE_CASE), "")
             val parsed = HistoryRepo.parseTweetUrl(norm) ?: return@launch
             val (username, tweetId) = parsed
-            val enabled = locator.settings.historyEnabled.first()
-            if (!enabled) return@launch
             // 页面 JS 未上报标题时（非详情点击路径），主动回读页面。
             // 竖屏滑动记录（fromMedia=true）跳过：mediaViewer 无 tweetText/article，
             // 回读会取到别的帖子的海报/正文（张冠李戴，快速滑动连续同图的根源）。
@@ -386,12 +528,15 @@ class BrowserViewModel : ViewModel() {
             if (mUrl.isBlank()) {
                 mUrl = locator.mediaParser.cachedThumbnail(tweetId)
             }
+            val mediaType = historyMediaType(tweetId, mUrl)
             val record = HistoryRecord(
                 url = norm,
                 tweetId = tweetId,
+                accountUsername = accountUsername,
                 username = username,
                 displayName = name,
                 textPreview = t,
+                mediaType = mediaType,
                 mediaUrl = mUrl,
                 visitedAt = System.currentTimeMillis(),
             )
@@ -414,18 +559,39 @@ class BrowserViewModel : ViewModel() {
                     delay(1000)
                     val cached = locator.mediaParser.cachedThumbnail(tweetId)
                     if (cached.isBlank()) continue
+                    val cachedType = historyMediaType(tweetId, cached)
                     locator.historyRepo.upsert(
-                        record.copy(mediaUrl = cached, visitedAt = System.currentTimeMillis())
+                        record.copy(
+                            mediaType = cachedType,
+                            mediaUrl = cached,
+                            visitedAt = System.currentTimeMillis(),
+                        )
                     )
                     val thumbPath = com.xverse.app.core.util.ThumbCache.persist(
                         locator.appContext, "history-$tweetId", cached
                     )
                     if (thumbPath.isNotBlank()) {
-                        locator.historyRepo.upsert(record.copy(mediaUrl = cached, thumbPath = thumbPath))
+                        locator.historyRepo.upsert(
+                            record.copy(mediaType = cachedType, mediaUrl = cached, thumbPath = thumbPath)
+                        )
                     }
                     LogStore.log(LogCategory.HISTORY, "缩略图补写: @$username/$tweetId")
                     break
                 }
+            }
+        }
+    }
+
+    /** 历史页只分图片/视频两类；X 的 animated_gif 统一归入视频。 */
+    private fun historyMediaType(tweetId: String, mediaUrl: String): String {
+        return when (locator.mediaParser.cachedMediaType(tweetId).lowercase()) {
+            "photo", "image" -> "photo"
+            "video", "gif", "animated_gif" -> "video"
+            else -> when {
+                mediaUrl.contains("/media/", ignoreCase = true) -> "photo"
+                mediaUrl.contains("video_thumb", ignoreCase = true) ||
+                    mediaUrl.startsWith("https://video.twimg.com/", ignoreCase = true) -> "video"
+                else -> ""
             }
         }
     }
@@ -461,11 +627,14 @@ class BrowserViewModel : ViewModel() {
     }
 
     fun reload() {
-        webView?.reload()
+        webView?.let {
+            it.injector.prepareForNavigation()
+            it.reload()
+        }
     }
 
     fun goHome() {
-        webView?.loadUrl("https://x.com")
+        loadUrl(Constants.HOME_URL)
     }
 
     /**
@@ -480,15 +649,17 @@ class BrowserViewModel : ViewModel() {
             // 同源判断：当前页确为 x.com（含子域），React 应用应已加载
             val cur = currentPageUrl()
             if (!isXComPage(cur)) {
+                wv.injector.prepareForNavigation()
                 wv.loadUrl(url)
                 return@launch
             }
             val ok = withContext(Dispatchers.Main) {
                 suspendCancellableCoroutine { cont ->
+                    val quotedUrl = org.json.JSONObject.quote(url)
                     val js = """
                         (function(){
                           try {
-                            history.pushState({}, '', '$url');
+                            history.pushState({}, '', $quotedUrl);
                             window.dispatchEvent(new PopStateEvent('popstate', {state: history.state}));
                             return 'ok';
                           } catch (e) { return 'err:' + e.message; }
@@ -500,18 +671,19 @@ class BrowserViewModel : ViewModel() {
                     }
                 }
             }
-            if (!ok) wv.loadUrl(url)
+            if (!ok) {
+                wv.injector.prepareForNavigation()
+                wv.loadUrl(url)
+            }
         }
     }
 
     /** 判断页面地址是否 x.com（http/https + x.com/twitter.com 域） */
     private fun isXComPage(u: String): Boolean =
-        u.startsWith("https://") && (
-            u.startsWith("https://x.com") ||
-            u.startsWith("https://www.x.com") ||
-            u.startsWith("https://twitter.com") ||
-            u.startsWith("https://mobile.twitter.com")
-            )
+        runCatching {
+            val uri = u.toUri()
+            uri.scheme == "https" && uri.host?.lowercase() in X_HOSTS
+        }.getOrDefault(false)
 
 
     /** 解析当前推文媒体（下拉打开时调用；重复点击只重新解析不重复入队） */
@@ -581,27 +753,14 @@ class BrowserViewModel : ViewModel() {
 
     override fun onCleared() {
         historyJob?.cancel()
-        // 释放 WebView 强引用（实际销毁由 Compose AndroidView 解组时负责），
-        // 避免 ViewModel 存活期间强持 WebView/JS 上下文
-        webView = null
-        super.onCleared()
-    }
-
-    /** 探针模式开关（adb 广播切换）：true = 零注入对照实验 */
-    @Volatile
-    var probeMode: Boolean = false
-
-    /**
-     * 探针模式切换（adb 广播）：置开关 + 清注入列表 + reload 首页。
-     * 下一整页加载即按新模式注入（探针=零注入 / 正常=全量）。
-     */
-    fun enterProbeMode(on: Boolean) {
-        probeMode = on
-        LogStore.log(
-            LogCategory.FILTER,
-            "探针模式 ${if (on) "开" else "关"}：${if (on) "零注入对照" else "恢复正常注入"}",
-        )
-        rebuildWebView()
+        usernameProbeJob?.cancel()
+        loginProbeJob?.cancel()
+        initialLoadJob?.cancel()
+        rebuildJob?.cancel()
+        filterRulesJob?.cancel()
+        appearanceSettingsJob?.cancel()
+        extensionWatchJob?.cancel()
+        webViewRef.clear()
     }
 
     /**
@@ -652,12 +811,131 @@ class BrowserViewModel : ViewModel() {
     }
 
     companion object {
-        val Factory = object : ViewModelProvider.Factory {
-            override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                @Suppress("UNCHECKED_CAST")
-                return BrowserViewModel() as T
+        private const val WEB_APPEARANCE_SCRIPT_KEY = "web-appearance"
+
+        private val X_HOSTS = setOf(
+            "x.com",
+            "www.x.com",
+            "twitter.com",
+            "www.twitter.com",
+            "mobile.twitter.com",
+        )
+
+        val Factory: ViewModelProvider.Factory = viewModelFactory {
+            initializer {
+                val app = checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY])
+                BrowserViewModel((app as com.xverse.app.XVerseApp).locator)
             }
         }
+
+        /**
+         * X 的移动布局常只渲染头像按钮，不提供可读取用户名的个人主页链接。此 hook 截获
+         * 页面自身请求里的 Bearer 授权头，再请求 account/settings 取得 screen_name 并回传。
+         * 不保存授权头，也不改写任意响应。
+         */
+        private val ACCOUNT_IDENTITY_HOOK = """
+            (function(){
+              'use strict';
+              if(window.__xvAccountIdentityHooked)return;
+              window.__xvAccountIdentityHooked=true;
+              var requested=false;
+              var resolved=false;
+              function report(name){
+                if(resolved||!name||!window.XVerseNative)return;
+                resolved=true;
+                XVerseNative.call('accountName',JSON.stringify({username:name}));
+              }
+              function ownIds(){
+                var raw='';try{raw=localStorage.getItem('rweb.recentUserIds')||'';}catch(e){}
+                // rweb.recentUserIds 在部分移动布局不会写入；twid=u%3D<id> 是同一会话
+                // 可读的用户 ID Cookie，作为可靠兜底。
+                var twid=document.cookie.split(';').map(function(x){return x.trim();})
+                  .filter(function(x){return x.indexOf('twid=')===0;})[0]||'';
+                try{raw+=' '+decodeURIComponent(twid.slice(5));}catch(e){}
+                var ids={},m,re=/[0-9]{6,}/g;
+                while((m=re.exec(raw)))ids[m[0]]=1;
+                return ids;
+              }
+              function scanResponse(value){
+                if(resolved)return;
+                var ids=ownIds();if(!Object.keys(ids).length)return;
+                var seen=[];
+                function walk(node,depth){
+                  if(resolved||!node||typeof node!=='object'||depth>16||seen.indexOf(node)>=0)return;
+                  seen.push(node);
+                  var id=String(node.rest_id||node.id_str||node.id||'');
+                  var legacy=node.legacy;
+                  if(ids[id]&&legacy&&legacy.screen_name){report(String(legacy.screen_name));return;}
+                  var core=node.core;
+                  if(ids[id]&&core&&core.screen_name){report(String(core.screen_name));return;}
+                  var keys=Object.keys(node);
+                  for(var i=0;i<keys.length;i++)walk(node[keys[i]],depth+1);
+                }
+                walk(value,0);
+              }
+              function captureResponse(response){
+                if(resolved||!response||!response.clone)return;
+                response.clone().text().then(function(text){
+                  if(text&&text.length<8388608)try{scanResponse(JSON.parse(text));}catch(e){}
+                }).catch(function(){});
+              }
+              function csrf(){
+                var q=document.cookie.split(';').map(function(x){return x.trim();})
+                  .filter(function(x){return x.indexOf('ct0=')===0;})[0]||'';
+                return q.slice(4);
+              }
+              function headerValue(headers,name){
+                if(!headers)return '';
+                try{if(headers.get)return headers.get(name)||headers.get(name.toLowerCase())||'';}catch(e){}
+                if(Array.isArray(headers)){
+                  for(var i=0;i<headers.length;i++)if(String(headers[i][0]).toLowerCase()===name.toLowerCase())return headers[i][1]||'';
+                }
+                for(var k in headers)if(k.toLowerCase()===name.toLowerCase())return headers[k]||'';
+                return '';
+              }
+              function identify(auth,send){
+                if(requested||!auth||!window.XVerseNative)return;
+                var ids=ownIds(),id=Object.keys(ids)[0];
+                if(!id)return;
+                requested=true;
+                var c=csrf();
+                var headers={authorization:auth,'x-twitter-active-user':'yes','x-twitter-auth-type':'OAuth2Session'};
+                if(c)headers['x-csrf-token']=decodeURIComponent(c);
+                var variables=encodeURIComponent(JSON.stringify({userId:id,withSafetyModeUserFields:true}));
+                send('/i/api/graphql/xvmVfRLmnr1alc5f2dib0Q/UserByRestId?variables='+variables+'&features=%7B%7D',{credentials:'include',headers:headers})
+                  .then(function(r){return r.json();})
+                  .then(function(j){scanResponse(j);})
+                  .catch(function(){requested=false;});
+              }
+              var nativeFetch=window.fetch;
+              if(nativeFetch){
+                window.fetch=function(input,init){
+                  var auth=headerValue(init&&init.headers,'authorization');
+                  if(!auth&&input&&input.headers)auth=headerValue(input.headers,'authorization');
+                  identify(auth,nativeFetch);
+                  var response=nativeFetch.apply(this,arguments);
+                  response.then(captureResponse).catch(function(){});
+                  return response;
+                };
+              }
+              var proto=XMLHttpRequest&&XMLHttpRequest.prototype;
+              if(proto){
+                var setHeader=proto.setRequestHeader,send=proto.send;
+                proto.setRequestHeader=function(name,value){
+                  if(String(name).toLowerCase()==='authorization')this.__xvAccountAuth=value;
+                  return setHeader.apply(this,arguments);
+                };
+                proto.send=function(){
+                  identify(this.__xvAccountAuth,nativeFetch);
+                  this.addEventListener('load',function(){
+                    if(this.responseType&&this.responseType!=='text')return;
+                    try{if(this.responseText&&this.responseText.length<8388608)scanResponse(JSON.parse(this.responseText));}catch(e){}
+                  },{once:true});
+                  return send.apply(this,arguments);
+                };
+              }
+            })();
+        """.trimIndent()
 
         /**
          * SPA 返回滚动恢复（document_start 注入）：
@@ -941,7 +1219,6 @@ class BrowserViewModel : ViewModel() {
             // replaceState → 一次滑动双写历史。用 window 级标记保证同上下文
             // 只有一份活跃 tracker，重复注入直接退出，杜绝多实例叠加。
             if (window.__xvMediaTracker) return;
-            window.__xvMediaTracker = true;
             var xvEntry = '';
             var xvCurrent = '';
             var xvSince = 0;
@@ -1052,7 +1329,13 @@ class BrowserViewModel : ViewModel() {
               history.pushState = function() { xvHistoryPush.apply(this, arguments); xvTrackMedia(); };
             } catch (e) {}
             // 兜底轮询：replaceState 补丁捕获不到的场景（如直接改 location）也能跟上
-            setInterval(xvTrackMedia, 400);
+            var xvMediaTimer = setInterval(xvTrackMedia, 400);
+            window.__xvMediaTracker = {
+              dispose: function(){ clearInterval(xvMediaTimer); }
+            };
+            window.addEventListener('pagehide', function(){
+              if (window.__xvMediaTracker) window.__xvMediaTracker.dispose();
+            }, {once:true});
         """.trimIndent()
 
         /** 页面元数据读取（停留路径被动回读）：返回 JSON 字符串 */
@@ -1230,58 +1513,5 @@ class BrowserViewModel : ViewModel() {
             })();
         """.trimIndent()
 
-        /**
-         * 探针模式专用只读探针（document_start 注入，零改动）：
-         * 不 patch 任何 API（不碰 History/scrollRestoration/滚动），只挂被动监听器——
-         *  1. rAF 每帧采样 scrollTop/scrollHeight/pathname/scrollRestoration/顶部推文 id；
-         *     静态帧去重（仅 st/h/path/sr 变化才记），防止 100 条相同样本刷屏；
-         *  2. popstate 强制打点（返回瞬间，必记）；
-         *  3. scroll 事件 150ms 去抖打点。
-         * 自动开始，样本永不手动清空（保留全程轨迹）。用于对照 x.com 原生返回行为。
-         */
-        private val PROBE_ONLY_SCRIPT = """
-            (function(){
-              'use strict';
-              if (window.__xvHf) return;
-              var HF = {
-                sr0: history.scrollRestoration,
-                samples: [],
-                lastSt: -1, lastH: -1, lastPath: '', lastSr: ''
-              };
-              function tid(){
-                var arts = document.querySelectorAll('article[data-testid="tweet"]');
-                var best = '', bestTop = 1e9, i, a, r, link, hh;
-                for (i = 0; i < arts.length; i++) {
-                  a = arts[i];
-                  if (!a.offsetWidth) continue;
-                  r = a.getBoundingClientRect();
-                  if (r.top < 0 || r.top > 500) continue;
-                  link = a.querySelector('a[href*="/status/"]');
-                  if (!link) continue;
-                  hh = (link.getAttribute('href') || '').split('/status/')[1];
-                  if (!hh) continue;
-                  if (r.top < bestTop) { bestTop = r.top; best = hh; }
-                }
-                return best;
-              }
-              function rec(tag, force){
-                var sc = document.scrollingElement || document.documentElement;
-                var st = Math.round(sc.scrollTop), h = Math.round(sc.scrollHeight);
-                var path = location.pathname, sr = history.scrollRestoration;
-                if (!force && tag === 'rAF' && st === HF.lastSt && h === HF.lastH && path === HF.lastPath && sr === HF.lastSr) return;
-                HF.lastSt = st; HF.lastH = h; HF.lastPath = path; HF.lastSr = sr;
-                HF.samples.push({ t: Date.now(), tag: tag, st: st, h: h, p: path, sr: sr, id: tid() });
-                if (HF.samples.length > 12000) HF.samples.splice(0, 400);
-              }
-              HF.rec = rec;
-              window.addEventListener('popstate', function(){ rec('pop', true); });
-              var _t = 0;
-              window.addEventListener('scroll', function(){ if (Date.now() - _t < 150) return; _t = Date.now(); rec('scroll', true); }, { passive: true });
-              (function loop(){ requestAnimationFrame(function(){ rec('rAF'); loop(); }); })();
-              rec('start', true);
-              HF.armed = true;
-              window.__xvHf = HF;
-            })();
-        """.trimIndent()
     }
 }

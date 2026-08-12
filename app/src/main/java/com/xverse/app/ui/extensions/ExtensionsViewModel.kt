@@ -1,14 +1,15 @@
 package com.xverse.app.ui.extensions
 
-import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.xverse.app.AppInstance
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.xverse.app.CommandBus
 import com.xverse.app.BrowserCommand
 import com.xverse.app.core.extensions.ExtensionEntity
+import com.xverse.app.di.ServiceLocator
 import com.xverse.app.core.log.LogCategory
 import com.xverse.app.core.log.LogStore
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,9 +21,13 @@ import kotlinx.coroutines.launch
 /**
  * 扩展页 ViewModel：列表、导入（文件/链接）、启停、卸载、配置覆盖层状态。
  */
-class ExtensionsViewModel : ViewModel() {
+class ExtensionsViewModel(private val locator: ServiceLocator) : ViewModel() {
 
-    private val locator get() = AppInstance.locator
+    init {
+        viewModelScope.launch {
+            locator.extensionImporter.repairLegacyStoreSources()
+        }
+    }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val extensions: StateFlow<List<ExtensionEntity>> =
@@ -109,10 +114,10 @@ class ExtensionsViewModel : ViewModel() {
     }
 
     companion object {
-        val Factory = object : ViewModelProvider.Factory {
-            override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                @Suppress("UNCHECKED_CAST")
-                return ExtensionsViewModel() as T
+        val Factory: ViewModelProvider.Factory = viewModelFactory {
+            initializer {
+                val app = checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY])
+                ExtensionsViewModel((app as com.xverse.app.XVerseApp).locator)
             }
         }
     }

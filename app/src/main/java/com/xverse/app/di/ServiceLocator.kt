@@ -17,6 +17,8 @@ import com.xverse.app.core.extensions.ExtensionImporter
 import com.xverse.app.core.extensions.ExtensionRepo
 import com.xverse.app.core.extensions.ExtensionRuntime
 import com.xverse.app.core.log.LogStore
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * 手动 DI 容器：懒加载所有单例，跨层共享。
@@ -35,9 +37,9 @@ class ServiceLocator(private val app: Context) {
 
     val downloadRepo: DownloadRepo by lazy { DownloadRepo(db.downloadDao()) }
 
-    val filterRepo: FilterRepo by lazy {
-        FilterRepo(db.filterRuleDao()).also { ensureBuiltinRules(it) }
-    }
+    val filterRepo: FilterRepo by lazy { FilterRepo(db.filterRuleDao()) }
+    private val builtinRulesMutex = Mutex()
+    @Volatile private var builtinRulesReady = false
 
     /** M3 下载三件套：解析 / 执行 / 通知 / 调度 */
     val mediaParser: MediaParser by lazy { MediaParser(app) }
@@ -45,7 +47,7 @@ class ServiceLocator(private val app: Context) {
     val downloadNotifier: DownloadNotifier get() = DownloadNotifier
 
     val downloadController: DownloadController by lazy {
-        DownloadController(app, downloadRepo, settings, mediaParser)
+        DownloadController(app, downloadRepo, settings, mediaParser, downloader)
     }
 
     /** M4：Custom Tab 辅助登录 + 登出收口 */
@@ -66,43 +68,51 @@ class ServiceLocator(private val app: Context) {
     /** WorkManager 启动的进程内取单例（Application 已初始化） */
     companion object {
         fun from(context: Context): ServiceLocator =
-            com.xverse.app.AppInstance.locator
+            (context.applicationContext as com.xverse.app.XVerseApp).locator
     }
 
     /** 首次启动写入内置过滤规则；已存在则按 version 升级（替换旧版） */
-    private fun ensureBuiltinRules(repo: FilterRepo) {
-        try {
-            val builtins = listOf(
-                FilterRule(
-                    type = RuleType.REGEX,
-                    pattern = "广告|推广|赞助|advertisement|sponsored|promoted",
-                    enabled = true,
-                    builtin = true,
-                    source = "builtin",
-                    version = "2",
-                    description = "内置：推广关键词（中英）",
-                ),
-            )
-            val existing = kotlinx.coroutines.runBlocking { repo.getBySource("builtin") }
-            // 清理已废弃规则：placementTracking CSS（0.3.0 起废弃——placementTracking 是视频/GIF 帖
-            // 通用播放器跟踪组件，用它做广告判定会误遮所有视频/GIF 帖，见 anti-promo-mutation.js）。
-            // 老库已种过这条规则，列表移除无法触发升级，需显式删除。
-            existing.forEach { old ->
-                if (old.type == RuleType.CSS && old.pattern.contains("placementTracking")) {
-                    kotlinx.coroutines.runBlocking { repo.delete(old.id) }
+    suspend fun ensureBuiltinFilterRules() {
+        if (builtinRulesReady) return
+        builtinRulesMutex.withLock {
+            if (builtinRulesReady) return
+            try {
+                val repo = filterRepo
+                val builtins = listOf(
+                    FilterRule(
+                        type = RuleType.REGEX,
+                        pattern = "广告|推广|赞助|advertisement|sponsored|promoted",
+                        enabled = true,
+                        builtin = true,
+                        source = "builtin",
+                        version = "4",
+                        description = "推广关键词（中英）",
+                    ),
+                )
+                val existing = repo.getBySource("builtin")
+                // 清理已废弃规则：placementTracking CSS（0.3.0 起废弃——placementTracking 是视频/GIF 帖
+                // 通用播放器跟踪组件，用它做广告判定会误遮所有视频/GIF 帖，见 anti-promo-mutation.js）。
+                // 老库已种过这条规则，列表移除无法触发升级，需显式删除。
+                existing.forEach { old ->
+                    if (old.type == RuleType.CSS && old.pattern.contains("placementTracking")) {
+                        repo.delete(old.id)
+                    }
                 }
-            }
-            // 逐条按 version 升级：已有同 source+type 但 version 更低的 → 替换为新版
-            builtins.forEach { b ->
-                val current = existing.firstOrNull { it.type == b.type && it.source == b.source }
-                if (current == null) {
-                    kotlinx.coroutines.runBlocking { repo.insert(b) }
-                } else if (current.version != b.version) {
-                    kotlinx.coroutines.runBlocking { repo.insert(b.copy(id = current.id, enabled = current.enabled)) }
+                // 逐条按 version 升级：已有同 source+type 但 version 更低的 → 替换为新版
+                builtins.forEach { builtin ->
+                    val current = existing.firstOrNull {
+                        it.type == builtin.type && it.source == builtin.source
+                    }
+                    if (current == null) {
+                        repo.insert(builtin)
+                    } else if (current.version != builtin.version) {
+                        repo.insert(builtin.copy(id = current.id, enabled = current.enabled))
+                    }
                 }
+                builtinRulesReady = true
+            } catch (e: Exception) {
+                LogStore.error("初始化内置规则失败", e)
             }
-        } catch (e: Exception) {
-            LogStore.error("初始化内置规则失败", e)
         }
     }
 }

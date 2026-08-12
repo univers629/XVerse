@@ -43,19 +43,26 @@ class MediaParser(private val context: Context) {
             .build()
     }
 
-    /** 最近一次 GraphQL 响应解析出的媒体，按推文 id 隔离（避免时间线/关联帖串入） */
-    private val cachedMedia = java.util.concurrent.ConcurrentHashMap<String, List<MediaItem>>()
+    /** 最近 GraphQL 媒体的有界 LRU；时间线长期浏览时不会按推文数无限增长。 */
+    private val cachedMedia = object : LinkedHashMap<String, List<MediaItem>>(MEDIA_CACHE_LIMIT, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<MediaItem>>): Boolean =
+            size > MEDIA_CACHE_LIMIT
+    }
 
     /** 供历史写入复用：返回该推文缓存里第一项媒体的缩略图 URL（无则空串）。
      *  GraphQL 缓存的视频项 thumbnailUrl 是海报帧（ext_tw_video_thumb…:small）。 */
     fun cachedThumbnail(tweetId: String): String =
-        cachedMedia[tweetId]?.firstOrNull()?.thumbnailUrl ?: ""
+        synchronized(cachedMedia) { cachedMedia[tweetId]?.firstOrNull()?.thumbnailUrl ?: "" }
+
+    /** 供历史记录写入复用；同一推文不会混合图片与视频，取第一项即可代表整帖类型。 */
+    fun cachedMediaType(tweetId: String): String =
+        synchronized(cachedMedia) { cachedMedia[tweetId]?.firstOrNull()?.mediaType ?: "" }
 
     /** 原生侧接收页面 GraphQL 响应，解析并缓存直链（按 tweetId 归属） */
     fun cacheFromGraphQL(tweetId: String, json: String) {
         val items = parseGraphQLMedia(json)
         if (items.isNotEmpty()) {
-            cachedMedia[tweetId] = items
+            synchronized(cachedMedia) { cachedMedia[tweetId] = items }
             LogStore.log(LogCategory.DOWNLOAD, "GraphQL 缓存 ${items.size} 个媒体直链（tweet $tweetId）")
         }
     }
@@ -68,7 +75,7 @@ class MediaParser(private val context: Context) {
         // 从规范 URL 提取 tweetId，只取属于该推文的缓存（引用/时间线里的其他推文不串入）
         val parsed = com.xverse.app.core.data.repo.HistoryRepo.parseTweetUrl(norm)
         val tweetId = parsed?.second ?: ""
-        val cached = if (tweetId.isNotBlank()) cachedMedia[tweetId] else null
+        val cached = if (tweetId.isNotBlank()) synchronized(cachedMedia) { cachedMedia[tweetId] } else null
         if (cached != null && cached.isNotEmpty()) {
             LogStore.log(LogCategory.DOWNLOAD, "命中 GraphQL 缓存 ${cached.size} 个（tweet $tweetId）")
             return@withContext cached
@@ -146,7 +153,7 @@ class MediaParser(private val context: Context) {
             .apply { if (cookie.isNotBlank()) header("Cookie", cookie) }
             .build()
         return client.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) null else resp.body?.string()
+            if (!resp.isSuccessful) null else resp.body.string()
         }
     }
 
@@ -367,6 +374,7 @@ class MediaParser(private val context: Context) {
     }
 
     companion object {
+        private const val MEDIA_CACHE_LIMIT = 128
         private const val CHROME_MOBILE_UA =
             "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/128.0.6613.99 Mobile Safari/537.36"

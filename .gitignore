@@ -12,17 +12,28 @@ gradle/gradle-daemon-jvm.properties
 /captures
 .externalNativeBuild
 .cxx
+.android/
 *.apk
 *.aab
 *.keystore
 *.jks
+*.p12
 *.hprof
+
+# 本地签名与环境配置
+keystore.properties
+signing.properties
+secrets.properties
+.env
+.env.*
+!.env.example
 
 # Kotlin
 .kotlin/
 
 # IDE
 .idea/
+.fleet/
 *.iml
 *.ipr
 *.iws
@@ -31,8 +42,19 @@ gradle/gradle-daemon-jvm.properties
 # macOS
 .DS_Store
 
+# Windows
+Thumbs.db
+Desktop.ini
+
 # Logs
 *.log
+
+# 编辑器与临时备份
+*.bak
+*.orig
+*.swp
+*.tmp
+*~
 
 # 本地调试截图（不入库）
 *.png
@@ -44,3 +66,6 @@ gradle/gradle-daemon-jvm.properties
 .tmp-xvtest/
 xvtest.crx
 /tmp/
+
+# 本地参考源码/压缩包，不属于应用源码或发布产物
+/references/

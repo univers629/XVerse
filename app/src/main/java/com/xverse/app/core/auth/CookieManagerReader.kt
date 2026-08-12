@@ -3,6 +3,10 @@ package com.xverse.app.core.auth
 import android.webkit.CookieManager
 import com.xverse.app.core.util.UiExecutor
 import com.xverse.app.core.webview.XWebView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 
 /**
  * CookieManager 主线程安全封装。
@@ -24,5 +28,41 @@ object CookieManagerReader {
         CookieManager.getInstance().removeAllCookies(null)
         CookieManager.getInstance().flush()
         webView?.reload()
+    }
+
+    /**
+     * 用保存的 x.com Cookie 替换当前会话。CookieManager 必须在主线程操作；逐条写入以兼容
+     * getCookie() 返回的标准 Cookie header（name=value; name2=value2）格式。
+     */
+    suspend fun replaceXCookies(cookieHeader: String): Boolean = withContext(Dispatchers.Main.immediate) {
+        val manager = CookieManager.getInstance()
+        if (!removeAllCookies(manager)) return@withContext false
+        val cookies = cookieHeader.split(';')
+            .map { it.trim() }
+            .filter { it.contains('=') }
+        if (cookies.isEmpty()) return@withContext false
+        for (cookie in cookies) {
+            if (!setCookie(manager, cookie)) return@withContext false
+        }
+        manager.flush()
+        true
+    }
+
+    /** 清空当前会话并等待 WebView CookieManager 完成，供「登录其他账户」使用。 */
+    suspend fun clearAllAwait(): Boolean = withContext(Dispatchers.Main.immediate) {
+        val manager = CookieManager.getInstance()
+        val cleared = removeAllCookies(manager)
+        manager.flush()
+        cleared
+    }
+
+    private suspend fun removeAllCookies(manager: CookieManager): Boolean = suspendCancellableCoroutine { cont ->
+        manager.removeAllCookies { ok -> if (cont.isActive) cont.resume(ok) }
+    }
+
+    private suspend fun setCookie(manager: CookieManager, value: String): Boolean = suspendCancellableCoroutine { cont ->
+        manager.setCookie("https://x.com", "$value; Path=/; Secure; SameSite=None") { ok ->
+            if (cont.isActive) cont.resume(ok)
+        }
     }
 }

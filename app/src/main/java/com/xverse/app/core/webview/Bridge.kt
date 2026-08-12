@@ -6,6 +6,7 @@ import com.xverse.app.core.log.LogCategory
 import com.xverse.app.core.log.LogStore
 import com.xverse.app.core.util.UiExecutor
 import org.json.JSONObject
+import java.lang.ref.WeakReference
 
 /**
  * JS ↔ 原生通信桥。
@@ -18,7 +19,9 @@ import org.json.JSONObject
  *
  * 回调 ID 由 JS 侧生成；原生回传时原样带回调 ID。
  */
-class Bridge(private val webView: WebView) {
+class Bridge(webView: WebView) {
+
+    private val webViewRef = WeakReference(webView)
 
     private val handlers = LinkedHashMap<String, (JSONObject, (JSONObject) -> Unit) -> Unit>()
 
@@ -30,7 +33,7 @@ class Bridge(private val webView: WebView) {
     /** JS 注入点：向页面暴露桥对象 */
     fun expose() {
         // 主线程
-        webView.addJavascriptInterface(this, "XVerseNative")
+        webViewRef.get()?.addJavascriptInterface(this, "XVerseNative")
     }
 
     @JavascriptInterface
@@ -76,7 +79,9 @@ class Bridge(private val webView: WebView) {
 
     private fun postJs(script: String) {
         UiExecutor.post {
-            webView.evaluateJavascript(script, null)
+            webViewRef.get()?.let { view ->
+                runCatching { view.evaluateJavascript(script, null) }
+            }
         }
     }
 }

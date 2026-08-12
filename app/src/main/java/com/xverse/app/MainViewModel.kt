@@ -3,20 +3,26 @@ package com.xverse.app
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.xverse.app.di.ServiceLocator
 import com.xverse.app.ui.navigation.XTab
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 
 /**
  * 应用级共享 ViewModel：主题模式、未读角标、Tab 状态、WebView 命令。
  */
-class MainViewModel(private val locator: ServiceLocator) : ViewModel() {
+class MainViewModel(locator: ServiceLocator) : ViewModel() {
 
     // ---- 主题 ----
     val themeMode = locator.settings.themeMode
+    val customMonetEnabled = locator.settings.customMonetEnabled
+    val customMonetColor = locator.settings.customMonetColor
 
     // ---- 浏览器命令（跨 Tab 指令） ----
     // 消费方（BrowserScreen）直接 collect CommandBus.commands，无需在此转发
@@ -55,10 +61,10 @@ class MainViewModel(private val locator: ServiceLocator) : ViewModel() {
     }
 
     companion object {
-        val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
-            override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                @Suppress("UNCHECKED_CAST")
-                return MainViewModel(AppInstance.locator) as T
+        val Factory: ViewModelProvider.Factory = viewModelFactory {
+            initializer {
+                val app = checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY])
+                MainViewModel((app as XVerseApp).locator)
             }
         }
     }
@@ -68,26 +74,34 @@ class MainViewModel(private val locator: ServiceLocator) : ViewModel() {
 object CommandBus {
     /**
      * 浏览器命令通道。
-     * 用 SharedFlow 而非 StateFlow：StateFlow 对相同值去重 + conflation（只留最新值），
-     * 历史页重复点击同一链接时命令值不变 → 不发事件 → 无反应。
-     * 也保证 GoHome + LoadUrl 连续 push 都投递，不被合并吞掉。
+     * Buffered Channel 保留订阅建立前的冷启动深链，也不会合并相同命令；
+     * 这可避免连续点击或首次启动时的导航事件被静默丢弃。
      */
-    val commands = MutableSharedFlow<BrowserCommand>(extraBufferCapacity = 1)
+    private val commandChannel = Channel<BrowserCommand>(
+        capacity = EVENT_BUFFER_CAPACITY,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val commands = commandChannel.receiveAsFlow()
     /**
      * Tab 切换事件通道。
-     * 用 SharedFlow 而非 StateFlow：StateFlow 对相同值去重（conflation），
-     * 历史页二次点击切回首页时 tabs 仍停在 HOME，值未变 → 不发事件 → 无法切回。
-     * SharedFlow 每次 emit 都投递，无去重问题。
+     * 同样使用事件语义；重复选择 HOME 仍会被逐次投递。
      */
-    val tabs = MutableSharedFlow<XTab>(extraBufferCapacity = 1)
+    private val tabChannel = Channel<XTab>(
+        capacity = EVENT_BUFFER_CAPACITY,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val tabs = tabChannel.receiveAsFlow()
+
     fun push(cmd: BrowserCommand) {
-        commands.tryEmit(cmd)
+        commandChannel.trySend(cmd)
     }
 
     /** 请求切换底栏 Tab（事件语义，同值重复 emit 也会投递） */
     fun selectTab(tab: XTab) {
-        tabs.tryEmit(tab)
+        tabChannel.trySend(tab)
     }
+
+    private const val EVENT_BUFFER_CAPACITY = 64
 }
 
 /** 浏览器命令（跨 Tab 指令） */
@@ -110,11 +124,4 @@ sealed class BrowserCommand {
     /** 过滤 AI 生成标签开关：热更新页面标记，不重载 */
     data class SetAiFilter(val on: Boolean) : BrowserCommand()
 
-    /** 探针模式切换（adb 广播）：置 probeMode + 清注入 + reload 首页 */
-    data class SetProbeMode(val on: Boolean) : BrowserCommand()
-}
-
-/** 全局 App 实例访问（避免 Factory 持有 context） */
-object AppInstance {
-    lateinit var locator: ServiceLocator
 }

@@ -3,6 +3,7 @@ package com.xverse.app.ui.download
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,24 +16,34 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -40,7 +51,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.xverse.app.core.data.db.DownloadStatus
 import com.xverse.app.core.data.db.DownloadTask
 import com.xverse.app.ui.download.DownloadViewModel
+import com.xverse.app.ui.download.DownloadMediaType
+import com.xverse.app.ui.download.downloadMediaType
 import com.xverse.app.ui.download.label
+import com.xverse.app.ui.common.ExpressiveEmptyState
+import com.xverse.app.ui.common.ExpressivePageTitle
+import com.xverse.app.ui.common.ExpressiveDeleteConfirmDialog
 import kotlinx.coroutines.launch
 
 /**
@@ -53,52 +69,147 @@ fun DownloadScreen(
 ) {
     val viewModel: DownloadViewModel = viewModel(factory = DownloadViewModel.Factory)
     val tasks by viewModel.tasks.collectAsStateWithLifecycle()
+    val filteredTasks by viewModel.filteredTasks.collectAsStateWithLifecycle()
+    val query by viewModel.query.collectAsStateWithLifecycle()
+    val selectedTypes by viewModel.selectedMediaTypes.collectAsStateWithLifecycle()
+    var deleteTarget by remember { mutableStateOf<DownloadTask?>(null) }
 
     Column(modifier = modifier.fillMaxSize()) {
-        Text(
-            text = "下载中心",
-            style = MaterialTheme.typography.titleLarge,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        ExpressivePageTitle(
+            title = "下载中心",
+            subtitle = if (tasks.isEmpty()) "媒体下载会显示在这里" else "${tasks.size} 个下载任务",
         )
-        // 保存位置：系统相册目录（MediaStore，无需选目录）
+
+        OutlinedTextField(
+            value = query,
+            onValueChange = viewModel::setQuery,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 4.dp),
+            placeholder = { Text("搜索下载…") },
+            singleLine = true,
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            trailingIcon = if (query.isNotEmpty()) {
+                {
+                    IconButton(onClick = { viewModel.setQuery("") }) {
+                        Icon(Icons.Filled.Close, contentDescription = "清空搜索")
+                    }
+                }
+            } else null,
+            shape = MaterialTheme.shapes.extraLarge,
+        )
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .padding(horizontal = 20.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Icon(
-                Icons.Filled.Folder,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            DownloadFilterChip(
+                label = "图片",
+                selected = DownloadMediaType.IMAGE in selectedTypes,
+                onClick = { viewModel.toggleMediaType(DownloadMediaType.IMAGE) },
+                modifier = Modifier.weight(1f),
             )
-            Text(
-                text = "保存到系统相册：图片 → Pictures/XVerse，视频 → Movies/XVerse",
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 6.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
+            DownloadFilterChip(
+                label = "GIF",
+                selected = DownloadMediaType.GIF in selectedTypes,
+                onClick = { viewModel.toggleMediaType(DownloadMediaType.GIF) },
+                modifier = Modifier.weight(1f),
+            )
+            DownloadFilterChip(
+                label = "视频",
+                selected = DownloadMediaType.VIDEO in selectedTypes,
+                onClick = { viewModel.toggleMediaType(DownloadMediaType.VIDEO) },
+                modifier = Modifier.weight(1f),
             )
         }
+
         if (tasks.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("暂无下载任务", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            ExpressiveEmptyState(
+                icon = Icons.Filled.Download,
+                title = "暂无下载任务",
+                description = "在首页打开推文后，可从工具栏选择媒体下载。",
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+            )
             return@Column
         }
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(tasks, key = { it.id }) { task ->
-                TaskCard(task, viewModel)
+
+        if (filteredTasks.isEmpty()) {
+            ExpressiveEmptyState(
+                icon = Icons.Filled.Search,
+                title = "没有符合条件的下载",
+                description = "请调整搜索内容或媒体类型筛选。",
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+            )
+            return@Column
+        }
+
+        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            items(filteredTasks, key = { it.id }) { task ->
+                TaskCard(
+                    task = task,
+                    vm = viewModel,
+                    onDeleteRequest = { deleteTarget = task },
+                )
             }
         }
+    }
+
+    deleteTarget?.let { task ->
+        val active = task.status == DownloadStatus.QUEUED ||
+            task.status == DownloadStatus.RUNNING ||
+            task.status == DownloadStatus.PAUSED
+        val message = when (task.status) {
+            DownloadStatus.DONE ->
+                "将删除下载记录和设备中已保存的文件“${task.fileName}”。此操作无法撤销。"
+            DownloadStatus.FAILED ->
+                "将删除失败记录和可能残留的本地文件“${task.fileName}”。此操作无法撤销。"
+            else ->
+                "将取消当前下载，并删除任务及已产生的本地文件“${task.fileName}”。此操作无法撤销。"
+        }
+        ExpressiveDeleteConfirmDialog(
+            title = if (active) "取消并删除下载？" else "删除下载记录？",
+            message = message,
+            confirmLabel = if (active) "取消并删除" else "删除",
+            onConfirm = {
+                deleteTarget = null
+                viewModel.delete(task.id)
+            },
+            onDismiss = { deleteTarget = null },
+        )
     }
 }
 
 @Composable
-private fun TaskCard(task: DownloadTask, vm: DownloadViewModel) {
+private fun DownloadFilterChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    FilterChip(
+        selected = selected,
+        onClick = onClick,
+        modifier = modifier,
+        shape = MaterialTheme.shapes.extraLarge,
+        label = {
+            Text(
+                text = label,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.labelLarge,
+            )
+        },
+    )
+}
+
+@Composable
+private fun TaskCard(
+    task: DownloadTask,
+    vm: DownloadViewModel,
+    onDeleteRequest: () -> Unit,
+) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     // 点击打开已下载文件（系统相册/播放器）；未完成/无应用时 Toast 提示原因
@@ -113,12 +224,13 @@ private fun TaskCard(task: DownloadTask, vm: DownloadViewModel) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .padding(horizontal = 16.dp, vertical = 5.dp)
             .clickable(enabled = true, onClick = onOpen),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
+        Column(modifier = Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // 媒体缩略图（本地 thumbPath 优先，离线零网络）
                 if (task.mediaUrl.isNotBlank()) {
@@ -135,7 +247,7 @@ private fun TaskCard(task: DownloadTask, vm: DownloadViewModel) {
                 ) {
                     Text(
                         text = task.fileName,
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.titleSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -153,7 +265,7 @@ private fun TaskCard(task: DownloadTask, vm: DownloadViewModel) {
                         )
                     }
                 }
-                TaskActions(task, vm)
+                TaskActions(task, vm, onDeleteRequest)
             }
             if (task.status == DownloadStatus.RUNNING || task.status == DownloadStatus.PAUSED) {
                 LinearProgressIndicator(
@@ -183,7 +295,11 @@ private fun TaskCard(task: DownloadTask, vm: DownloadViewModel) {
 }
 
 @Composable
-private fun TaskActions(task: DownloadTask, vm: DownloadViewModel) {
+private fun TaskActions(
+    task: DownloadTask,
+    vm: DownloadViewModel,
+    onDeleteRequest: () -> Unit,
+) {
     when (task.status) {
         DownloadStatus.RUNNING -> IconButton(onClick = { vm.pause(task.id) }) {
             Icon(Icons.Filled.Pause, contentDescription = "暂停")
@@ -200,7 +316,7 @@ private fun TaskActions(task: DownloadTask, vm: DownloadViewModel) {
         DownloadStatus.DONE -> {}
     }
     // 所有状态都可删除：QUEUED/RUNNING 会取消排队任务，其余清理已完成/失败记录
-    IconButton(onClick = { vm.delete(task.id) }) {
+    IconButton(onClick = onDeleteRequest) {
         Icon(Icons.Filled.Delete, contentDescription = "删除")
     }
 }
@@ -212,31 +328,26 @@ private fun TaskActions(task: DownloadTask, vm: DownloadViewModel) {
  */
 @Composable
 private fun FormatBadge(task: DownloadTask) {
-    val type = task.mediaType.ifBlank {
-        when (task.fileName.substringAfterLast('.', "").lowercase()) {
-            "gif" -> "gif"
-            "jpg", "jpeg", "png", "webp", "heic", "bmp" -> "photo"
-            else -> "video"
-        }
-    }
-    val (label, container, content) = when (type) {
-        "gif" -> Triple(
+    val darkSurface = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    val (label, container, content) = when (task.downloadMediaType()) {
+        DownloadMediaType.GIF -> Triple(
             "GIF",
             MaterialTheme.colorScheme.tertiaryContainer,
             MaterialTheme.colorScheme.onTertiaryContainer,
         )
-        "photo" -> Triple(
+        DownloadMediaType.IMAGE -> Triple(
             "图片",
             MaterialTheme.colorScheme.secondaryContainer,
             MaterialTheme.colorScheme.onSecondaryContainer,
         )
-        else -> Triple(
+        DownloadMediaType.VIDEO -> Triple(
             "视频",
-            MaterialTheme.colorScheme.surfaceVariant,
-            MaterialTheme.colorScheme.onSurfaceVariant,
+            // 深色模式下进一步降低容器不透明度，避免淡绿块过于跳脱。
+            Color(0xFF9CE5A8).copy(alpha = if (darkSurface) 0.22f else 0.50f),
+            if (darkSurface) Color(0xFFB7EDC0) else Color(0xFF155D2D),
         )
     }
-    Surface(color = container, shape = RoundedCornerShape(4.dp)) {
+    Surface(color = container, shape = MaterialTheme.shapes.small) {
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,

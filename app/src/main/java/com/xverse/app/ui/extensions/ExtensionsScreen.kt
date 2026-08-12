@@ -32,6 +32,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -49,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
@@ -56,8 +58,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.xverse.app.AppInstance
 import com.xverse.app.core.extensions.ExtensionEntity
+import com.xverse.app.di.ServiceLocator
+import com.xverse.app.ui.common.ExpressiveEmptyState
+import com.xverse.app.ui.common.ExpressivePageTitle
 import java.io.File
 
 /**
@@ -105,54 +109,29 @@ fun ExtensionsScreen(
     }
 
     Column(modifier = modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = "扩展",
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.weight(1f),
-            )
-            if (importing) {
-                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(12.dp))
-            }
-            Button(onClick = { showImportDialog = true }) {
-                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("导入扩展")
-            }
-        }
+        ExpressivePageTitle(
+            title = "扩展",
+            subtitle = if (extensions.isEmpty()) "为 x.com 增加自己的能力" else "${extensions.size} 个已导入扩展",
+            actions = {
+                if (importing) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(10.dp))
+                }
+                Button(onClick = { showImportDialog = true }, shape = MaterialTheme.shapes.extraLarge) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("导入")
+                }
+            },
+        )
 
         if (extensions.isEmpty() && !importing) {
-            Column(
+            ExpressiveEmptyState(
+                icon = Icons.Filled.Extension,
+                title = "还没有扩展",
+                description = "导入 .crx/.zip、.user.js，或粘贴 Chrome/Edge 商店链接、扩展 ID、直链。",
                 modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Icon(
-                    Icons.Filled.Extension,
-                    contentDescription = null,
-                    modifier = Modifier.size(48.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    text = "还没有扩展",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    text = "支持 .crx/.zip 扩展包、.user.js 油猴用户脚本，或粘贴 Chrome/Edge 商店链接、扩展 ID、直链",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.fillMaxWidth(2f / 3f),
-                    textAlign = TextAlign.Center,
-                )
-            }
+            )
             return
         }
 
@@ -180,8 +159,8 @@ private enum class ExtensionSource(
     val iconRes: Int,
 ) {
     USERSCRIPT("USERSCRIPT", "油猴用户脚本", com.xverse.app.R.drawable.ic_brand_userscript),
-    CHROME("CHROME", "Chrome 插件", com.xverse.app.R.drawable.ic_brand_chrome),
-    EDGE("EDGE", "Edge 插件", com.xverse.app.R.drawable.ic_brand_edge),
+    CHROME("CHROME", "Chrome 商店扩展", com.xverse.app.R.drawable.ic_brand_chrome),
+    EDGE("EDGE", "Edge 商店扩展", com.xverse.app.R.drawable.ic_brand_edge),
 }
 
 /** 来源分组分隔行：品牌徽标 + 标签（跳过空分组） */
@@ -190,19 +169,34 @@ private fun SourceHeader(source: ExtensionSource) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            painter = androidx.compose.ui.res.painterResource(source.iconRes),
-            contentDescription = source.label,
-            modifier = Modifier.size(18.dp),
-        )
-        Spacer(Modifier.width(6.dp))
+        Surface(
+            modifier = Modifier.size(26.dp),
+            shape = RoundedCornerShape(7.dp),
+            color = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    painter = painterResource(source.iconRes),
+                    contentDescription = null,
+                    modifier = Modifier.size(15.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
         Text(
             text = source.label,
             style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.width(12.dp))
+        HorizontalDivider(
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f),
         )
     }
 }
@@ -214,13 +208,15 @@ private fun ExtensionCard(ext: ExtensionEntity, viewModel: ExtensionsViewModel) 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        colors = CardDefaults.cardColors(),
+            .padding(horizontal = 16.dp, vertical = 3.dp),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(horizontal = 14.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // 图标：本地 icon.png；缺省扩展占位
@@ -231,8 +227,7 @@ private fun ExtensionCard(ext: ExtensionEntity, viewModel: ExtensionsViewModel) 
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // 名称可长：weight(1f, fill=false) 让它在空间不足时优先被省略，
-                    // 不会把「用户脚本」徽标挤出卡片边界压到开关/删除按钮下面
+                    // 名称可长：weight(1f, fill=false) 让它在空间不足时优先被省略。
                     Text(
                         text = ext.name,
                         style = MaterialTheme.typography.titleSmall,
@@ -243,7 +238,7 @@ private fun ExtensionCard(ext: ExtensionEntity, viewModel: ExtensionsViewModel) 
                     Spacer(Modifier.width(6.dp))
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(4.dp),
+                        shape = MaterialTheme.shapes.small,
                     ) {
                         Text(
                             text = "v${ext.version}",
@@ -251,20 +246,6 @@ private fun ExtensionCard(ext: ExtensionEntity, viewModel: ExtensionsViewModel) 
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
                         )
-                    }
-                    if (ext.source == ExtensionSource.USERSCRIPT.source) {
-                        Spacer(Modifier.width(6.dp))
-                        Surface(
-                            color = MaterialTheme.colorScheme.tertiaryContainer,
-                            shape = RoundedCornerShape(4.dp),
-                        ) {
-                            Text(
-                                text = "油猴用户脚本",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
-                            )
-                        }
                     }
                 }
                 if (ext.description.isNotBlank()) {
@@ -277,13 +258,21 @@ private fun ExtensionCard(ext: ExtensionEntity, viewModel: ExtensionsViewModel) 
                     )
                 }
             }
-            Column(horizontalAlignment = Alignment.End) {
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(0.dp),
+            ) {
                 Switch(
                     checked = ext.enabled,
                     onCheckedChange = { viewModel.setEnabled(ext, it) },
+                    modifier = Modifier.height(36.dp),
                 )
                 if (ext.optionsPage.isNotBlank()) {
-                    TextButton(onClick = { viewModel.openOptions(ext) }) {
+                    TextButton(
+                        onClick = { viewModel.openOptions(ext) },
+                        modifier = Modifier.height(34.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+                    ) {
                         Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(2.dp))
                         Text("配置")
@@ -325,6 +314,7 @@ private fun ExtensionCard(ext: ExtensionEntity, viewModel: ExtensionsViewModel) 
 /** 扩展图标：本地 icon.png 或占位（inSampleSize 缩容解码，避免大图标全尺寸占内存） */
 @Composable
 private fun ExtensionIcon(ext: ExtensionEntity) {
+    val runtime = ServiceLocator.from(LocalContext.current).extensionRuntime
     var icon by remember(ext.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
     var loaded by remember(ext.id) { mutableStateOf(false) }
 
@@ -332,7 +322,7 @@ private fun ExtensionIcon(ext: ExtensionEntity) {
         androidx.compose.runtime.LaunchedEffect(ext.id) {
             val bmp = if (ext.iconPath.isBlank()) null
             else try {
-                val f = File(AppInstance.locator.extensionRuntime.extDir(ext.id), ext.iconPath)
+                val f = File(runtime.extDir(ext.id), ext.iconPath)
                 if (f.isFile) decodeSampled(f.absolutePath, 160) else null
             } catch (e: Exception) {
                 null
@@ -380,6 +370,7 @@ private fun ImportDialog(
 
     AlertDialog(
         onDismissRequest = { if (!importing) onDismiss() },
+        shape = RoundedCornerShape(16.dp),
         title = { Text("导入扩展") },
         text = {
             Column {
@@ -398,12 +389,15 @@ private fun ImportDialog(
                             value = input,
                             onValueChange = { input = it },
                             modifier = Modifier.fillMaxWidth(),
-                            placeholder = { Text("商店链接 / 扩展 ID / .crx .zip .user.js 油猴脚本直链") },
-                            singleLine = true,
+                            placeholder = {
+                                Text("商店链接 / 扩展 ID\n/ .crx .zip\n/ .user.js 油猴脚本直链")
+                            },
+                            minLines = 3,
+                            maxLines = 3,
                         )
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            text = "支持 Chrome/Edge 商店链接、裸扩展 ID，或 .crx/.zip/.user.js 油猴脚本直链",
+                            text = "支持 Chrome/Edge 商店链接、扩展 ID\n或 .crx/.zip/.user.js 油猴直链",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -456,7 +450,7 @@ private fun decodeSampled(path: String, reqPx: Int): android.graphics.Bitmap? {
 /** 配置页覆盖层：全屏 WebView 加载扩展 options 页 */
 @Composable
 private fun OptionsOverlay(ext: ExtensionEntity, onClose: () -> Unit) {
-    val runtime = AppInstance.locator.extensionRuntime
+    val runtime = ServiceLocator.from(LocalContext.current).extensionRuntime
     // 覆盖层顶到屏幕顶，需给状态栏留高，否则返回箭头落在状态栏下被点击吞掉
     Surface(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
         Column(modifier = Modifier.fillMaxSize()) {

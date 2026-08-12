@@ -12,9 +12,11 @@ import kotlinx.coroutines.flow.Flow
  */
 class HistoryRepo(private val dao: HistoryDao) {
 
-    fun observeAll(): Flow<List<HistoryRecord>> = dao.observeAll()
+    fun observeForAccount(accountUsername: String): Flow<List<HistoryRecord>> =
+        dao.observeForAccount(accountUsername)
 
-    fun search(q: String): Flow<List<HistoryRecord>> = dao.search("%$q%")
+    fun search(accountUsername: String, q: String): Flow<List<HistoryRecord>> =
+        dao.search(accountUsername, "%$q%")
 
     suspend fun upsert(record: HistoryRecord) {
         dao.upsert(record)
@@ -22,7 +24,9 @@ class HistoryRepo(private val dao: HistoryDao) {
 
     suspend fun delete(record: HistoryRecord) = dao.delete(record)
 
-    suspend fun clear() = dao.clearAll()
+    suspend fun backfillMediaTypes(): Int = dao.backfillMediaTypes()
+
+    suspend fun clear(accountUsername: String) = dao.clearForAccount(accountUsername)
 
     /** 清理历史遗留：小写 mediaviewer 孤儿记录（见 HistoryDao.deleteOrphanMediaviewer） */
     suspend fun deleteOrphanMediaviewer(): Int = dao.deleteOrphanMediaviewer()
@@ -31,7 +35,7 @@ class HistoryRepo(private val dao: HistoryDao) {
     suspend fun cleanup(maxKeepDays: Int = Constants.HISTORY_MAX_KEEP_DAYS, maxRecords: Int = Constants.HISTORY_MAX_RECORDS) {
         val cutoff = System.currentTimeMillis() - maxKeepDays * 86_400_000L
         val removedByAge = dao.deleteOlderThan(cutoff)
-        val removedByLimit = dao.trimTo(maxRecords)
+        val removedByLimit = dao.accountUsernames().sumOf { dao.trimTo(it, maxRecords) }
         if (removedByAge + removedByLimit > 0) {
             LogStore.log(LogCategory.HISTORY, "历史清理：过期 $removedByAge 条，超上限 $removedByLimit 条")
         }

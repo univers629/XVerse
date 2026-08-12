@@ -20,6 +20,8 @@
 // 2026-08-08 v7：AI 生成标签过滤（广告过滤子项，开关在 CC 行下方）。
 // 检测信号：叶子 span 自身文本 === 'Made with AI'（精确匹配，零误伤）。
 // 接在 scan() 内（observer + 初始扫描 + 3s 轮询覆盖），开关热更新标记 __xvFilterAi。
+// 2026-08-11 v8：strip 模式的漏网广告使用专属 data 标记 + CSS !important 固化隐藏状态。
+// React 重绘即使覆盖 inline style，也不能让已识别广告重新出现；主路径仍由 GraphQL 层直接删除。
 (function () {
   'use strict';
   if (window.__xvAdMutationInstalled) return;
@@ -169,6 +171,7 @@
     if (article.dataset.xverseHidden) return;
     if (window.__xvFilterMode === 'strip') {
       article.dataset.xverseHidden = '1';
+      article.dataset.xverseStripAdHidden = '1';
       article.style.display = 'none';
       return;
     }
@@ -252,7 +255,7 @@
     for (i = 0; i < articles.length; i++) {
       article = articles[i];
       if (article.dataset.xverseHidden) continue;
-      // AI 生成标签过滤（开关默认开）：命中「Made with AI」标签 → 独立 owner 遮罩。
+      // AI 生成标签过滤（首次安装默认关）：开启后命中「Made with AI」标签 → 独立 owner 遮罩。
       // 与广告并存时广告优先（广告已遮罩则跳过，避免覆盖广告标记/卡片）。
       if (window.__xvFilterAi !== false && !article.dataset.xverseAiHidden &&
           !article.dataset.xverseCcHidden && !article.dataset.xverseRevealed &&
@@ -270,6 +273,15 @@
     // 否则 observer.observe(null) 抛错、整个脚本中止（曾实测广告不隐藏）。
     var root = document.querySelector('div[data-testid="primaryColumn"]') || document.body;
     if (!root) return false;
+
+    // strip 模式的 DOM 兜底：网络层漏网广告一旦识别，即使 React 后续重绘样式也不能复现。
+    // data 标记只由 strip 分支写入，不影响 mask 模式的可点击占位卡片。
+    if (window.__xvFilterMode === 'strip' && !document.getElementById('xverse-strip-ad-lock')) {
+      var lockStyle = document.createElement('style');
+      lockStyle.id = 'xverse-strip-ad-lock';
+      lockStyle.textContent = 'article[data-xverse-strip-ad-hidden="1"]{display:none!important;}';
+      (document.head || document.documentElement).appendChild(lockStyle);
+    }
 
     // 监听动态加载
     var observer = new MutationObserver(function (mutations) {
@@ -344,8 +356,12 @@
       }
     }, 800);
 
-    // 页面卸载时清定时器，避免泄漏
-    window.addEventListener('pagehide', function () { clearInterval(iv); clearInterval(playerIv); });
+    // 页面卸载时断开 observer 并清定时器，避免 WebView 页面进入缓存后仍持有整棵 DOM。
+    window.addEventListener('pagehide', function () {
+      observer.disconnect();
+      clearInterval(iv);
+      clearInterval(playerIv);
+    }, { once: true });
     return true;
   }
 

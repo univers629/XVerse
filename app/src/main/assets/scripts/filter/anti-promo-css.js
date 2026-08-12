@@ -13,9 +13,19 @@
       'aside[aria-label="Who to follow"]{display:none!important;}',
       'div[data-testid="sidebarColumn"]{display:none!important;}'
     ];
-    var style = document.createElement('style');
-    style.id = 'xverse-filter-css';
-    style.textContent = STATIC_RULES.join('\n');
-    (document.head || document.documentElement).appendChild(style);
+    var mountTries = 0;
+    function mountStyle() {
+      if (document.getElementById('xverse-filter-css')) return;
+      var root = document.head || document.documentElement;
+      if (!root) {
+        if (mountTries++ < 100) setTimeout(mountStyle, 16);
+        return;
+      }
+      var style = document.createElement('style');
+      style.id = 'xverse-filter-css';
+      style.textContent = STATIC_RULES.join('\n');
+      root.appendChild(style);
+    }
+    mountStyle();
   } catch (e) {}
 })();

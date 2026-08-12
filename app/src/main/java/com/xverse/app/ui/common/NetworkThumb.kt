@@ -65,7 +65,7 @@ fun NetworkThumb(url: String, modifier: Modifier = Modifier, thumbPath: String =
                 withContext(Dispatchers.IO) {
                     val req = Request.Builder().url(url).build()
                     thumbClient.newCall(req).execute().use { resp ->
-                        resp.body?.bytes()?.let { decodeSampled(it, THUMB_TARGET_PX) }
+                        decodeSampled(resp.body.bytes(), THUMB_TARGET_PX)
                     }
                 }
             }.getOrNull()

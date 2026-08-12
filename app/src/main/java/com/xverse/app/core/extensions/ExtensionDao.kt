@@ -17,6 +17,9 @@ interface ExtensionDao {
     @Query("SELECT * FROM extensions WHERE enabled = 1")
     suspend fun getEnabled(): List<ExtensionEntity>
 
+    @Query("SELECT * FROM extensions")
+    suspend fun getAll(): List<ExtensionEntity>
+
     @Query("SELECT * FROM extensions WHERE id = :id")
     suspend fun getById(id: String): ExtensionEntity?
 
@@ -25,6 +28,9 @@ interface ExtensionDao {
 
     @Query("UPDATE extensions SET enabled = :enabled WHERE id = :id")
     suspend fun setEnabled(id: String, enabled: Boolean)
+
+    @Query("UPDATE extensions SET source = :source WHERE id = :id")
+    suspend fun setSource(id: String, source: String)
 
     @Query("DELETE FROM extensions WHERE id = :id")
     suspend fun delete(id: String)

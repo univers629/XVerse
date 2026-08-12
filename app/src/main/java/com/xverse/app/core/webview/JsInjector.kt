@@ -1,6 +1,9 @@
 package com.xverse.app.core.webview
 
 import android.webkit.WebView
+import androidx.webkit.ScriptHandler
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import com.xverse.app.core.log.LogCategory
 import com.xverse.app.core.log.LogStore
 import com.xverse.app.core.util.UiExecutor
@@ -24,7 +27,11 @@ import com.xverse.app.core.util.UiExecutor
 class JsInjector(private val webView: WebView) {
 
     private val earlyScripts = mutableListOf<String>()
+    private val keyedEarlyScripts = linkedMapOf<String, String>()
     private val lateScripts = mutableListOf<String>()
+    private val nativeDocumentStartSupported =
+        WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)
+    private var documentStartHandler: ScriptHandler? = null
 
     /**
      * 扩展内容脚本提供者：每次整页加载时**重建** bundle（返回 null 表示无扩展）。
@@ -38,6 +45,11 @@ class JsInjector(private val webView: WebView) {
         if (script !in earlyScripts) earlyScripts += script
     }
 
+    /** 注册或替换可随设置变化的 document_start 脚本。 */
+    fun setEarly(key: String, script: String) {
+        keyedEarlyScripts[key] = script
+    }
+
     /** 注册 document_idle 增强脚本 */
     fun addLate(script: String) {
         if (script !in lateScripts) lateScripts += script
@@ -46,8 +58,36 @@ class JsInjector(private val webView: WebView) {
     /** 清空全部已注册脚本（探针模式切换/重建时调用，下一整页加载即零注入） */
     fun clear() {
         earlyScripts.clear()
+        keyedEarlyScripts.clear()
         lateScripts.clear()
         extProvider = null
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        UiExecutor.post {
+            documentStartHandler?.remove()
+            documentStartHandler = null
+        }
+    }
+
+    /**
+     * 在整页导航前把 early 脚本注册到 Chromium 的 document-start 生命周期。
+     * 支持时脚本会早于页面自己的 JavaScript 执行；不支持时仍由 onPageStarted 回退注入。
+     * 扩展脚本继续按每次导航动态生成，避免 GM 存储缓存被固化在注册时快照中。
+     */
+    fun prepareForNavigation() {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        UiExecutor.post {
+            documentStartHandler?.remove()
+            documentStartHandler = null
+            val scripts = earlyScripts + keyedEarlyScripts.values
+            if (scripts.isEmpty()) return@post
+            val bundle = scripts.joinToString("\n") { wrapIife(it) }
+            documentStartHandler = WebViewCompat.addDocumentStartJavaScript(
+                webView,
+                bundle,
+                X_ORIGIN_RULES,
+            )
+            LogStore.log(LogCategory.FILTER, "WebView 原生 document_start 已注册 x${scripts.size}")
+        }
     }
 
     /** 设置扩展注入提供者（early/late bundle）。每次整页加载调用一次，重建注入文本 */
@@ -57,8 +97,13 @@ class JsInjector(private val webView: WebView) {
 
     /** 页面开始加载：注入拦截脚本 */
     fun onPageStarted(url: String) {
-        LogStore.log(LogCategory.FILTER, "注入 early 脚本 x${earlyScripts.size} → $url")
-        earlyScripts.forEach { evaluate(wrapIife(it)) }
+        if (nativeDocumentStartSupported) {
+            LogStore.log(LogCategory.FILTER, "原生 document_start 已先于页面执行 x${earlyScripts.size + keyedEarlyScripts.size} → $url")
+        } else {
+            val scripts = earlyScripts + keyedEarlyScripts.values
+            LogStore.log(LogCategory.FILTER, "WebView 不支持原生 document_start，回退 early 注入 x${scripts.size} → $url")
+            scripts.forEach { evaluate(wrapIife(it)) }
+        }
         val p = extProvider?.invoke()
         if (p != null) {
             LogStore.log(LogCategory.FILTER, "注入扩展 early bundle → $url")
@@ -91,6 +136,13 @@ class JsInjector(private val webView: WebView) {
     }
 
     companion object {
+        private val X_ORIGIN_RULES = setOf(
+            "https://x.com",
+            "https://*.x.com",
+            "https://twitter.com",
+            "https://*.twitter.com",
+        )
+
         /** 将脚本包装为内联 IIFE 文本（工程规范 #1） */
         fun wrapIife(script: String): String = "(function(){\n'use strict';\n$script\n})();"
 

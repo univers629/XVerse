@@ -43,6 +43,9 @@ class ExtensionImporter(
     private val extRoot: File
         get() = File(context.filesDir, "extensions").apply { mkdirs() }
 
+    private val integratedFilterPackRoot: File
+        get() = File(context.filesDir, "filter_packs").apply { mkdirs() }
+
     /** 导入失败用可读中文错误 */
     class ImportException(message: String) : Exception(message)
 
@@ -107,7 +110,7 @@ class ExtensionImporter(
             try {
                 val bytes = client.newCall(Request.Builder().url(url).build())
                     .execute()
-                    .use { resp -> if (resp.isSuccessful) resp.body?.bytes() else null }
+                    .use { resp -> if (resp.isSuccessful) resp.body.bytes() else null }
                 if (bytes != null && bytes.size > 0 && bytes.size <= MAX_ENTRY_BYTES) {
                     val f = File(requireDir, "$idx.js")
                     f.writeBytes(bytes)
@@ -167,6 +170,26 @@ class ExtensionImporter(
         val c = context.contentResolver
         return c.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
             ?.use { cur -> if (cur.moveToFirst()) cur.getString(0) else "" } ?: ""
+    }
+
+    /**
+     * 6→7 数据库迁移曾把所有存量商店扩展统一标成 CHROME。对其中包清单明确
+     * 指向 Edge 更新服务的记录做一次自愈；只修正 CHROME→EDGE，避免覆盖导入时
+     * 已经由商店链接明确记录的来源。
+     */
+    suspend fun repairLegacyStoreSources() = withContext(Dispatchers.IO) {
+        repo.getAll().forEach { ext ->
+            if (ext.manifestVersion == 0 || ext.source != SOURCE_CHROME) return@forEach
+            val manifestFile = File(extRoot, "${ext.id}/manifest.json")
+            if (!manifestFile.isFile) return@forEach
+            val detected = runCatching {
+                detectStoreSource(JSONObject(manifestFile.readText()))
+            }.getOrNull()
+            if (detected == SOURCE_EDGE) {
+                repo.setSource(ext.id, SOURCE_EDGE)
+                LogStore.log(LogCategory.FILTER, "已修正扩展来源为 Edge: ${ext.name}")
+            }
+        }
     }
 
     // ---- 链接/ID 通道 ----
@@ -240,12 +263,12 @@ class ExtensionImporter(
                         LogStore.log(LogCategory.DOWNLOAD, "Edge 拉取失败 HTTP ${resp.code}")
                         throw ImportException("从 Edge 商店拉取扩展失败（HTTP ${resp.code}），可改用直链导入")
                     }
-                    resp.body?.bytes()
+                    resp.body.bytes()
                 }
-            if (body == null || body.size < 64) {
+            if (body.size < 64) {
                 throw ImportException("Edge 商店返回空包，可改用直链导入")
             }
-            body.inputStream().use { importFromStream(it, "$id.crx", source = "EDGE") }
+            body.inputStream().use { importFromStream(it, "$id.crx", source = SOURCE_EDGE) }
         } catch (e: ImportException) {
             throw e
         } catch (e: Exception) {
@@ -270,12 +293,12 @@ class ExtensionImporter(
                         LogStore.log(LogCategory.DOWNLOAD, "update2 拉取失败 HTTP ${resp.code}")
                         throw ImportException("从商店拉取扩展失败（HTTP ${resp.code}），可改用直链导入")
                     }
-                    resp.body?.bytes()
+                    resp.body.bytes()
                 }
-            if (body == null || body.size < 64) {
+            if (body.size < 64) {
                 throw ImportException("商店返回空包，可改用直链导入")
             }
-            body.inputStream().use { importFromStream(it, "$id.crx") }
+            body.inputStream().use { importFromStream(it, "$id.crx", source = SOURCE_CHROME) }
         } catch (e: ImportException) {
             throw e
         } catch (e: Exception) {
@@ -291,7 +314,7 @@ class ExtensionImporter(
                 .execute()
                 .use { resp ->
                     if (!resp.isSuccessful) throw ImportException("下载失败（HTTP ${resp.code}）")
-                    resp.body?.bytes() ?: throw ImportException("下载内容为空")
+                    resp.body.bytes()
                 }
         } catch (e: ImportException) {
             throw e
@@ -309,7 +332,7 @@ class ExtensionImporter(
                 .execute()
                 .use { resp ->
                     if (!resp.isSuccessful) throw ImportException("下载失败（HTTP ${resp.code}）")
-                    resp.body?.bytes() ?: throw ImportException("下载内容为空")
+                    resp.body.bytes()
                 }
         } catch (e: ImportException) {
             throw e
@@ -324,10 +347,10 @@ class ExtensionImporter(
 
     /**
      * 从任意流解压注册扩展。
-     * @param source 来源：CHROME / EDGE（决定列表分组，不影响注入）
+     * @param source 已知的导入来源；本地包/直链未指定时根据 manifest.update_url 判定。
      * @return extId（包 SHA-256 前 16 字节 hex，32 字符）
      */
-    private suspend fun importFromStream(stream: InputStream, name: String, source: String = "CHROME"): String {
+    private suspend fun importFromStream(stream: InputStream, name: String, source: String? = null): String {
         val bytes = stream.readBytes()
         val extId = sha256Hex(bytes).substring(0, 32)
         val zipBytes = extractZipBytes(bytes)
@@ -346,6 +369,7 @@ class ExtensionImporter(
             // 消息本地化：__MSG_name__ 等；解析后的消息存盘供 shim 的 i18n.getMessage 使用
             val deviceLang = Locale.getDefault().language
             val manifestJson = JSONObject(manifestFile.readText())
+            val resolvedSource = source ?: detectStoreSource(manifestJson) ?: SOURCE_CHROME
             val defaultLocale = manifestJson.optString("default_locale", "")
             val messages = ManifestParser.resolveMessages(
                 File(tmp, "_locales"), defaultLocale, deviceLang
@@ -356,6 +380,17 @@ class ExtensionImporter(
             val nameLoc = ManifestParser.localize(parsed.name, messages)
             val descLoc = ManifestParser.localize(parsed.description, messages)
             val optionsLoc = ManifestParser.localize(parsed.optionsPage, messages)
+
+            // 过滤扩展的后台页无法在 WebView 中运行；若原包包含可识别的默认过滤库，
+            // 从用户下载的原版数据生成 XVerse 原生过滤索引，供设置页独立开关。
+            val nativeFilterPack = ExtensionFilterPackStore.buildIfSupported(
+                extensionDir = tmp,
+                extensionId = extId,
+                manifest = manifestJson,
+                localizedName = nameLoc,
+                locale = Locale.getDefault(),
+                packageZip = zipBytes,
+            )
 
             // 图标复制到固定 icon.png
             val iconRel = ManifestParser.pickIcon(parsed.icons)
@@ -406,6 +441,13 @@ class ExtensionImporter(
                 tmp.deleteRecursively()
             }
 
+            // 规则索引属于设置页的原生广告过滤模块，不跟随扩展的启停、配置或卸载。
+            if (nativeFilterPack != null &&
+                !ExtensionFilterPackStore.detachBuiltPack(old, integratedFilterPackRoot)
+            ) {
+                LogStore.log(LogCategory.FILTER, "规则索引暂未剥离，将在设置页首次读取时重试")
+            }
+
             // 保留原 enabled 状态（重装不重置开关）
             val prev = repo.getById(extId)
             repo.insert(
@@ -415,8 +457,9 @@ class ExtensionImporter(
                     version = parsed.version,
                     manifestVersion = parsed.manifestVersion,
                     description = descLoc,
-                    enabled = prev?.enabled ?: true,
-                    source = source,
+                    // 后台型过滤扩展由原生规则行接管；不默认注入其依赖后台状态的内容脚本。
+                    enabled = if (nativeFilterPack != null) false else prev?.enabled ?: true,
+                    source = resolvedSource,
                     optionsPage = optionsLoc,
                     iconPath = iconPath,
                     contentScriptsJson = csJson.toString(),
@@ -470,8 +513,10 @@ class ExtensionImporter(
      * 解压 ZIP 到目录，带路径穿越与体积防护。
      *
      * WebView 不执行后台脚本（MV3 service worker / MV2 background），
-     * 声明式规则集（declarativeNetRequest）与 _metadata 校验数据在此无用，
-     * 且体积巨大（AdGuard 等过滤扩展规则集常超百 MB），跳过不落盘：
+     * MV3 声明式规则集与 _metadata 校验数据体积巨大，跳过不落盘；可支持的默认规则
+     * 由 ExtensionFilterPackStore 直接从原始 ZIP 流式提取。AdGuard MV2 的 filters
+     * 目录文本会先临时展开，再从文本规则中提取默认规则为紧凑索引，
+     * 随后删除原始过滤库：
      * 只保留内容脚本 / 图标 / options / _locales / background 文件等注入相关部分。
      */
     private fun unpackZip(zip: ZipInputStream, dest: File) {
@@ -538,16 +583,29 @@ class ExtensionImporter(
         return md.digest(bytes).joinToString("") { "%02x".format(it) }
     }
 
+    private fun detectStoreSource(manifest: JSONObject): String? {
+        val updateUrl = manifest.optString("update_url").lowercase(Locale.US)
+        return when {
+            "edge.microsoft.com" in updateUrl || "microsoftedge.microsoft.com" in updateUrl -> SOURCE_EDGE
+            "clients2.google.com" in updateUrl || "chromewebstore.google.com" in updateUrl -> SOURCE_CHROME
+            else -> null
+        }
+    }
+
     companion object {
         private const val MAX_ENTRIES = 2000
-        private const val MAX_UNPACK_BYTES = 50L * 1024 * 1024
+        // AdGuard Edge MV2 原包约 65MB；允许临时展开后提取默认规则并立即压缩为索引。
+        private const val MAX_UNPACK_BYTES = 80L * 1024 * 1024
         // 单文件上限 20MB：主流过滤/翻译扩展压缩前的单文件通常 ≤ 12MB
         // （如 immersive-translate 的 ort-wasm-simd-threaded.wasm 10.7MB）
         private const val MAX_ENTRY_BYTES = 20L * 1024 * 1024
-        private const val MAX_USER_SCRIPT_BYTES = 2L * 1024 * 1024
+        // 沉浸式翻译官方油猴版约 4.5MB；保留余量同时限制异常大脚本。
+        private const val MAX_USER_SCRIPT_BYTES = 8L * 1024 * 1024
 
         /** 用户脚本来源标记（扩展列表分组用） */
         const val SOURCE_USERSCRIPT = "USERSCRIPT"
+        const val SOURCE_CHROME = "CHROME"
+        const val SOURCE_EDGE = "EDGE"
 
         /** 真机系统 WebView 版本（update2 端点要求 prodversion 为 Chromium 版本号） */
         private const val WEBVIEW_VERSION = "149.0.7827.159"

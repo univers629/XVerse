@@ -3,21 +3,41 @@ package com.xverse.app.ui.download
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.xverse.app.AppInstance
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.xverse.app.core.data.db.DownloadStatus
 import com.xverse.app.core.data.db.DownloadTask
+import com.xverse.app.di.ServiceLocator
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
  * 下载中心 ViewModel：任务列表 + 操作。
  */
-class DownloadViewModel : ViewModel() {
-
-    private val locator get() = AppInstance.locator
+class DownloadViewModel(private val locator: ServiceLocator) : ViewModel() {
     val controller get() = locator.downloadController
 
     val tasks = MutableStateFlow<List<DownloadTask>>(emptyList())
+    val query = MutableStateFlow("")
+    val selectedMediaTypes = MutableStateFlow(DownloadMediaType.entries.toSet())
+
+    val filteredTasks = combine(tasks, query, selectedMediaTypes) { all, text, types ->
+        val keyword = text.trim()
+        all.filter { task ->
+            task.downloadMediaType() in types && (
+                keyword.isBlank() || listOf(
+                    task.fileName,
+                    task.tweetUrl,
+                    task.format,
+                    task.resolution,
+                    task.status.label(),
+                ).any { it.contains(keyword, ignoreCase = true) }
+            )
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {
         viewModelScope.launch {
@@ -32,16 +52,39 @@ class DownloadViewModel : ViewModel() {
     fun resume(id: Long) = controller.resume(id)
     fun retry(id: Long) = controller.retry(id)
     fun delete(id: Long) = controller.delete(id)
+    fun setQuery(value: String) { query.value = value }
+
+    fun toggleMediaType(type: DownloadMediaType) {
+        selectedMediaTypes.value = selectedMediaTypes.value.toMutableSet().apply {
+            if (!add(type)) remove(type)
+        }
+    }
 
     /** 打开已下载文件：解析可读 content URI → 系统相册/播放器。返回可读提示文案，null 表示成功 */
     suspend fun open(id: Long): String? = controller.open(id)
 
     companion object {
-        val Factory = object : ViewModelProvider.Factory {
-            override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                @Suppress("UNCHECKED_CAST")
-                return DownloadViewModel() as T
+        val Factory: ViewModelProvider.Factory = viewModelFactory {
+            initializer {
+                val app = checkNotNull(this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY])
+                DownloadViewModel((app as com.xverse.app.XVerseApp).locator)
             }
+        }
+    }
+}
+
+enum class DownloadMediaType { IMAGE, GIF, VIDEO }
+
+/** 兼容旧下载记录：优先使用落库类型，缺失时按文件扩展名判断。 */
+fun DownloadTask.downloadMediaType(): DownloadMediaType {
+    return when (mediaType.lowercase()) {
+        "photo", "image" -> DownloadMediaType.IMAGE
+        "gif", "animated_gif" -> DownloadMediaType.GIF
+        "video" -> DownloadMediaType.VIDEO
+        else -> when (fileName.substringAfterLast('.', "").lowercase()) {
+            "gif" -> DownloadMediaType.GIF
+            "jpg", "jpeg", "png", "webp", "heic", "bmp", "avif" -> DownloadMediaType.IMAGE
+            else -> DownloadMediaType.VIDEO
         }
     }
 }

@@ -4,12 +4,12 @@
 
 <img src="docs/icon.png" width="128" height="128" alt="XVerse 图标" />
 
-一个为 x.com 打造的 Android WebView 增强壳 —— 广告过滤 · 一键下载 · 扩展加载 · 浏览历史。
+一个为 x.com 打造的 Android WebView 增强壳 —— 广告过滤 · 高级搜索 · 一键下载 · 扩展加载 · 浏览历史。
 
 纯客户端壳，**不代理流量、不改写数据、不绕过登录**；内容均来自 X 官方登录会话。
 
 ![Platform](https://img.shields.io/badge/platform-Android%2012%2B-3ddc84)
-![Kotlin](https://img.shields.io/badge/Kotlin-2.2-7f52ff)
+![Kotlin](https://img.shields.io/badge/Kotlin-2.4-7f52ff)
 ![Material3](https://img.shields.io/badge/UI-Material%203-0F1419)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -17,67 +17,85 @@
 
 ## 功能
 
-- **广告剥离**：两种过滤方式可选 ——「占位 + 可点击验证」：CSS 注入 → MutationObserver，命中广告保留占位并显示提示卡片，点击卡片可查看原推文（防误屏蔽），再点隐藏恢复屏蔽；「完全不加载」：GraphQL 数据层直接剔除广告，广告根本不进 DOM。可另过滤带字幕（CC）视频（独立开关，热更新生效）
-- **一键下载**：顶栏下载按钮，推文页列出图片/视频/动图，直存系统相册（`Pictures/XVerse`、`Movies/XVerse`）；下载列表带格式徽标（GIF / 视频 / 图片）、缩略图，支持断点续传
-- **扩展加载**：导入 Chrome 扩展（.crx）与油猴用户脚本（.user.js），支持内容脚本、样式、配置页与 storage.local；来源分组展示
-- **浏览历史**：停留超 1.5s 或点击详情自动记录，缩略图离线显示，点击回跳帖子
-- **本地过滤规则**：添加屏蔽词与自定义 CSS，热更新生效
-- **纯净内核**：不代理流量、不上报数据
+- **广告与内容过滤**：支持占位验证或数据层剔除两种模式，可过滤带字幕视频；内置规则、扩展规则包、关键词和自定义 CSS 均可热更新
+- **高级搜索**：原生搜索面板组合关键词、账号、时间、互动量、媒体、位置等 X 搜索运算符，并保存本地历史与收藏
+- **一键下载**：识别推文图片、视频和动图，流式写入 MediaStore 或用户选择的 SAF 目录，支持后台任务、暂停、恢复与系统查看器打开
+- **扩展加载**：导入 `.crx`、`.zip` 和 `.user.js`，支持内容脚本、样式、配置页、`storage.local`、扩展过滤包及常用 GM API
+- **账号与历史**：使用 X 官方 Cookie 会话识别账号，按账号隔离浏览历史；详情页自动记录并缓存缩略图
+- **界面体验**：Material 3、系统/自定义 Monet 配色、紧凑顶栏与短时转场动画
+- **纯净内核**：纯客户端实现，不代理流量，不采集或上报用户数据
 
 ## 技术栈
 
 | 层 | 选型 |
 |---|---|
-| 构建 | AGP 9.1.1 · Kotlin 2.2.10 · KSP |
+| 构建 | AGP 9.3.1 · Gradle 9.7.0 · Kotlin 2.4.0 · KSP 2.3.10 |
 | UI | Jetpack Compose + Material 3 |
 | WebView | Android WebView + AndroidX WebKit |
 | 数据库 | Room 2.8（历史 / 下载 / 过滤规则 / 扩展） |
-| 后台下载 | WorkManager + OkHttp（HTTP/1.1 兼容 twimg CDN） |
+| 后台任务 | WorkManager + OkHttp（流式下载，兼容 twimg CDN） |
 | 媒体落盘 | MediaStore（系统相册）· SAF（DocumentFile） |
-| 扩展 | CRX/UserScript 解析 · chrome 兼容层 · 资源拦截 |
+| 扩展 | CRX/UserScript 解析 · chrome/GM 兼容层 · 资源拦截 |
 | 偏好 | DataStore |
+
+首次安装时，“隐藏网页内 X 底栏”、“自定义主题色”、“AdGuard 集成规则”和“过滤 AI 生成内容”默认关闭；其余设置页开关默认开启。升级安装会保留已有偏好。
+
+## 设计与生命周期
+
+- `XVerseApp` 持有唯一 `ServiceLocator`，ViewModel 通过 factory 注入依赖，不依赖全局静态 Context
+- WebView 仅由界面层持有；ViewModel 使用弱引用，离开组合时停止加载、移除 Bridge、释放 client 并销毁 WebView
+- 页面脚本的 observer、interval 与重试任务会在 `pagehide` 时回收；媒体解析、广告日志、应用日志和扩展分块会话均设置容量上限
+- 页面命令使用有界 Channel，冷启动与连续点击不会因订阅时序而静默丢失
+- Release 默认启用 R8 代码压缩和资源收缩，并保留必要的 JavaScript Bridge 接口
 
 ## 项目结构
 
-```
+```text
 XVerse/
 ├── app/
 │   ├── src/main/
 │   │   ├── assets/
-│   │   │   ├── extensions/           # 预置依赖（用户脚本 @require 的 JSZip 等）
-│   │   │   └── scripts/filter/       # 广告过滤脚本（CSS / Strip / Mutation）
+│   │   │   ├── extensions/           # 预置脚本依赖
+│   │   │   └── scripts/filter/       # 广告过滤脚本
 │   │   ├── java/com/xverse/app/
 │   │   │   ├── core/
-│   │   │   │   ├── auth/             # 登录态、Cookie 主线程封装
-│   │   │   │   ├── data/             # Room：实体 / DAO / 仓库
-│   │   │   │   ├── download/         # 媒体解析、下载器、WorkManager 调度
-│   │   │   │   ├── extensions/       # CRX/UserScript 解析、运行时注入、chrome 兼容层
-│   │   │   │   ├── log/              # 应用内日志
-│   │   │   │   ├── util/             # 常量、缩略图缓存、UI 主线程执行器
-│   │   │   │   └── webview/          # WebView 封装、JS 注入、Bridge 桥接
-│   │   │   ├── di/                   # 手动 DI 组装（ServiceLocator）
-│   │   │   └── ui/                   # browser / extensions / history / download / settings / logs / common / navigation / theme
-│   │   └── res/
-│   │       ├── drawable/             # 品牌徽标（Chrome/Edge/油猴）、通知图标
-│   │       └── mipmap-*/             # 应用图标（小蓝鸟 + Web 字样，adaptive + legacy 全密度）
+│   │   │   │   ├── auth/             # Cookie 会话与本地账号仓库
+│   │   │   │   ├── data/             # Room 实体、DAO 与仓库
+│   │   │   │   ├── download/         # 媒体解析、下载器与后台任务
+│   │   │   │   ├── extensions/       # 扩展解析、运行时与兼容层
+│   │   │   │   ├── log/              # 有界应用日志
+│   │   │   │   ├── search/           # X 搜索语法、历史与收藏
+│   │   │   │   ├── util/             # 常量、缩略图缓存、主线程工具
+│   │   │   │   └── webview/          # WebView、脚本注入与 Bridge
+│   │   │   ├── di/                   # 手动依赖组装
+│   │   │   └── ui/                   # Compose 页面、导航与主题
+│   │   └── res/                       # 图标、主题与备份规则
 │   └── build.gradle.kts
-├── build.gradle.kts                   # AGP / Kotlin / KSP 版本声明
+├── build.gradle.kts
 ├── settings.gradle.kts
-├── gradle/wrapper/                    # Gradle Wrapper
-└── .gitignore
+└── gradle/wrapper/
 ```
 
-## 构建
+## 构建与检查
 
-```bash
-# 环境：JDK 17+、Android SDK 37、已连接 Android 12+ 设备
-./gradlew.bat :app:assembleDebug
+```powershell
+# 环境：JDK 17+、Android SDK 37；运行要求 Android 12+
+.\gradlew.bat :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
+
+# 提交前检查
+.\gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
 ```
+
+Release 输出位于 `app/build/outputs/apk/release/`。仓库不保存构建产物、签名文件或真实账号数据；正式发布前请自行配置签名。
+
+## 数据与备份
+
+浏览历史、下载记录、过滤规则、扩展和偏好均保存在设备本地。Android 备份规则会排除账号 Cookie 仓库等会话数据，避免登录态随系统备份迁移。
 
 ## 合规说明
 
-本项目是个人使用的 x.com 客户端壳，与 X Corp. 无任何关联。登录、数据与账号均由 X 官方服务提供；应用仅缓存浏览过的页面与媒体，不做批量抓取或数据外传。
+本项目是个人使用的 x.com 客户端壳，与 X Corp. 无任何关联。登录、内容与账号数据均由 X 官方服务提供；应用只在本地保存必要状态和用户主动下载的媒体，不做批量抓取或数据外传。使用扩展与自定义规则时，请自行确认来源与权限。
 
 ## License
 

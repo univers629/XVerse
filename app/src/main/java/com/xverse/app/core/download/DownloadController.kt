@@ -1,6 +1,9 @@
 package com.xverse.app.core.download
 
 import android.content.Context
+import android.net.Uri
+import androidx.core.net.toUri
+import androidx.documentfile.provider.DocumentFile
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.Data
@@ -19,6 +22,7 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -35,35 +39,13 @@ class DownloadController(
     private val settings: SettingsRepo,
     /** 共享 MediaParser 单例（GraphQL 缓存写入同一实例，解析时才能命中） */
     private val parser: MediaParser,
+    /** 与 WorkManager Worker 共享实例，确保暂停信号作用于正在下载的任务。 */
+    private val downloader: Downloader,
 ) {
-    private val scope = CoroutineScope(Dispatchers.IO)
-
-    /** 扩展直链下载用的 OkHttp（跟随重定向，超时适当放宽） */
-    private val okHttpClient: okhttp3.OkHttpClient by lazy {
-        okhttp3.OkHttpClient.Builder()
-            .followRedirects(true)
-            .followSslRedirects(true)
-            .connectTimeout(20, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            // 同 Downloader：twimg CDN 关闭 OkHttp 的 HTTP/2 连接，强制 HTTP/1.1
-            .protocols(listOf(okhttp3.Protocol.HTTP_1_1))
-            .build()
-    }
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** 串行化「文件名保留 + 落库」临界区：多图连点并发入队时保证文件名互不冲突 */
-    private val enqueueMutex = kotlinx.coroutines.sync.Mutex()
-
-    private val downloader: Downloader by lazy { Downloader(context, repo) }
-
-    /** 默认下载目录（应用外部私有目录 Movies/XVerse，可被 SAF 授权覆盖） */
-    suspend fun defaultDirPath(): String {
-        val configured = settings.downloadDir.first()
-        if (configured.isNotBlank()) return configured
-        val base = context.getExternalFilesDir(null) ?: context.filesDir
-        val dir = File(base, "Movies/XVerse")
-        dir.mkdirs()
-        return dir.absolutePath
-    }
+    private val enqueueMutex = Mutex()
 
     /** 解析推文媒体列表 */
     suspend fun parseTweet(tweetUrl: String): List<MediaItem> {
@@ -89,9 +71,9 @@ class DownloadController(
         return try {
             // 临界区加锁：文件名唯一性在并发入队时由 Mutex + 任务表共同保证
             val (dirPath, finalName) = enqueueMutex.withLock {
-                val dir = defaultDirPath()
+                val dir = configuredDirFor(media.mediaType, media.extension)
                 val base = buildFileName(tweetUrl, media)
-                dir to uniquify(File(dir, base))
+                dir to uniquifyForDirectory(dir, base)
             }
             val task = DownloadTask(
                 tweetUrl = tweetUrl,
@@ -136,20 +118,21 @@ class DownloadController(
      */
     suspend fun enqueueDownloadBytes(bytes: ByteArray, name: String, media: MediaItem): Boolean {
         return try {
-            val finalName = enqueueMutex.withLock {
-                uniquify(File(defaultDirPath(), name))
+            val (dirPath, finalName) = enqueueMutex.withLock {
+                val dir = configuredDirFor(media.mediaType, name.substringAfterLast('.', ""))
+                dir to uniquifyForDirectory(dir, name)
             }
-            val uri = writeBytesToMediaStore(finalName, bytes)
+            val uri = writeBytesToConfiguredTarget(dirPath, finalName, bytes)
             if (uri == null) {
-                LogStore.log(LogCategory.DOWNLOAD, "扩展直存 MediaStore 失败: $finalName")
+                LogStore.log(LogCategory.DOWNLOAD, "扩展直存失败: $finalName")
                 return false
             }
-            val relPath = mediaStoreRelPath(finalName)
+            val displayPath = if (dirPath.isBlank()) mediaStoreRelPath(finalName) else dirPath
             val task = DownloadTask(
                 tweetUrl = "",
                 mediaUrl = media.url,
                 fileName = finalName,
-                dirPath = relPath,
+                dirPath = displayPath,
                 format = media.extension,
                 resolution = media.quality,
                 totalBytes = bytes.size.toLong(),
@@ -157,7 +140,7 @@ class DownloadController(
                 contentUri = uri.toString(),
             )
             repo.insert(task)
-            LogStore.log(LogCategory.DOWNLOAD, "扩展直存: $finalName（${bytes.size} B → $relPath）")
+            LogStore.log(LogCategory.DOWNLOAD, "扩展直存: $finalName（${bytes.size} B → $displayPath）")
             true
         } catch (e: Exception) {
             LogStore.error("扩展字节直存失败", e)
@@ -210,54 +193,67 @@ class DownloadController(
             }
         }
 
+    /** 将扩展下载写入用户选中的 SAF 目录；未配置时沿用 MediaStore。 */
+    private suspend fun writeBytesToConfiguredTarget(dirPath: String, fileName: String, bytes: ByteArray): Uri? =
+        withContext(Dispatchers.IO) {
+            if (!dirPath.startsWith("content://")) return@withContext writeBytesToMediaStore(fileName, bytes)
+            try {
+                val tree = DocumentFile.fromTreeUri(context, dirPath.toUri()) ?: return@withContext null
+                val doc = tree.createFile(mimeFor(fileName), fileName) ?: return@withContext null
+                context.contentResolver.openOutputStream(doc.uri, "w")?.use { it.write(bytes) } ?: run {
+                    doc.delete()
+                    return@withContext null
+                }
+                doc.uri
+            } catch (e: Exception) {
+                LogStore.error("SAF 写入失败: $fileName", e)
+                null
+            }
+        }
+
+    /** 媒体类型分别使用图片、GIF、视频的目录；为空时由下载器回退公共相册目录。 */
+    private suspend fun configuredDirFor(mediaType: String, extension: String): String {
+        val type = mediaType.lowercase()
+        return when {
+            type == "gif" || extension.equals("gif", ignoreCase = true) -> settings.downloadGifDir.first()
+            type == "video" || extension.lowercase() in setOf("mp4", "mov", "webm", "mkv", "avi", "3gp", "m4v") -> settings.downloadVideoDir.first()
+            else -> settings.downloadImageDir.first()
+        }
+    }
+
     /**
      * URL 直链下载（扩展 GM_download http/https 通道）：
-     * 由原生 OkHttp 直接下载，经 MediaStore 落公共目录 + 登记任务（状态 DONE）。
-     * 页面零 Blob 转换，绕开 CSP 与 Binder 限制，适用于图片/视频/任意文件。
+     * 只登记任务并交给 WorkManager 流式下载，不把整个响应体堆在内存中。
      */
     suspend fun enqueueDownloadUrl(url: String, name: String, media: MediaItem): Boolean {
         return try {
-            val finalName = enqueueMutex.withLock {
-                uniquify(File(defaultDirPath(), name))
+            val extension = name.substringAfterLast('.', "")
+                .lowercase()
+                .ifBlank { media.extension.ifBlank { "bin" } }
+            val mediaType = media.mediaType.takeIf { it in setOf("photo", "image", "gif", "video") }
+                ?: mediaTypeForExtension(extension)
+            val (dirPath, finalName) = enqueueMutex.withLock {
+                val dir = configuredDirFor(mediaType, extension)
+                dir to uniquifyForDirectory(dir, name)
             }
-            val bytes = downloadToBytes(url) ?: return false
-            val uri = writeBytesToMediaStore(finalName, bytes)
-            if (uri == null) {
-                LogStore.log(LogCategory.DOWNLOAD, "扩展直链 MediaStore 失败: $finalName")
-                return false
-            }
-            val relPath = mediaStoreRelPath(finalName)
             val task = DownloadTask(
                 tweetUrl = "",
                 mediaUrl = url,
                 fileName = finalName,
-                dirPath = relPath,
-                format = finalName.substringAfterLast('.', "").ifBlank { "bin" },
+                dirPath = dirPath,
+                format = extension,
+                mediaType = mediaType,
                 resolution = media.quality,
-                totalBytes = bytes.size.toLong(),
-                status = DownloadStatus.DONE,
-                contentUri = uri.toString(),
+                totalBytes = media.size,
+                status = DownloadStatus.QUEUED,
             )
-            repo.insert(task)
-            LogStore.log(LogCategory.DOWNLOAD, "扩展直链: $finalName（${bytes.size} B → $relPath）")
+            val id = repo.insert(task)
+            scheduleWorker(id, task.copy(id = id))
+            LogStore.log(LogCategory.DOWNLOAD, "扩展直链已入队: $finalName")
             true
         } catch (e: Exception) {
             LogStore.error("扩展直链下载失败", e)
             false
-        }
-    }
-
-    /** 用 OkHttp 下载 URL 全部字节（失败返回 null） */
-    private suspend fun downloadToBytes(url: String): ByteArray? = withContext(Dispatchers.IO) {
-        try {
-            okHttpClient.newCall(okhttp3.Request.Builder().url(url).build())
-                .execute()
-                .use { resp ->
-                    if (resp.isSuccessful) resp.body?.bytes() else null
-                }
-        } catch (e: Exception) {
-            LogStore.error("扩展直链拉取失败: $url", e)
-            null
         }
     }
 
@@ -279,6 +275,7 @@ class DownloadController(
                 task.status == DownloadStatus.PAUSED ||
                 task.status == DownloadStatus.FAILED
             ) {
+                downloader.clearPause(id)
                 repo.setStatus(id, DownloadStatus.QUEUED)
                 scheduleWorker(id, task.copy(status = DownloadStatus.QUEUED))
             }
@@ -298,12 +295,12 @@ class DownloadController(
             try {
                 // 优先 contentUri（MediaStore 下载完成的文件在此）；SAF/普通路径回退 dirPath
                 if (task.contentUri.isNotBlank()) {
-                    context.contentResolver.delete(android.net.Uri.parse(task.contentUri), null, null)
+                    context.contentResolver.delete(task.contentUri.toUri(), null, null)
                 } else {
                     val dirPath = task.dirPath
                     if (dirPath.isNotBlank()) {
                         if (dirPath.startsWith("content://")) {
-                            val tree = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, android.net.Uri.parse(dirPath))
+                            val tree = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, dirPath.toUri())
                             tree?.findFile(task.fileName)?.delete()
                         } else {
                             File(dirPath, task.fileName).delete()
@@ -358,7 +355,7 @@ class DownloadController(
      */
     private suspend fun resolveReadableUri(task: DownloadTask): android.net.Uri? {
         val stored = task.contentUri.takeIf { it.isNotBlank() }
-        if (stored != null) return android.net.Uri.parse(stored)
+        if (stored != null) return stored.toUri()
         val dirPath = task.dirPath
         if (dirPath.isBlank()) return null
         return try {
@@ -383,7 +380,7 @@ class DownloadController(
         withContext(Dispatchers.IO) {
             try {
                 val tree = androidx.documentfile.provider.DocumentFile.fromTreeUri(
-                    context, android.net.Uri.parse(task.dirPath)
+                    context, task.dirPath.toUri()
                 ) ?: return@withContext null
                 val doc = tree.findFile(task.fileName) ?: return@withContext null
                 val input = context.contentResolver.openInputStream(doc.uri)
@@ -440,6 +437,13 @@ class DownloadController(
         }
     }
 
+    private fun mediaTypeForExtension(extension: String): String = when (extension.lowercase()) {
+        "jpg", "jpeg", "png", "webp", "heic", "bmp", "avif" -> "photo"
+        "gif" -> "gif"
+        "mp4", "mov", "webm", "mkv", "avi", "3gp", "m4v" -> "video"
+        else -> "file"
+    }
+
     /** 提交下载 Worker（unique work，避免重复入队） */
     private fun scheduleWorker(id: Long, task: DownloadTask) {
         val data: Data = workDataOf(DownloadWorker.KEY_TASK_ID to id)
@@ -472,6 +476,40 @@ class DownloadController(
             counter++
             candidate = "${stem}_$counter$ext"
         }
+        return candidate
+    }
+
+    /** SAF 目录和默认目录均使用同一套冲突改名规则。 */
+    private suspend fun uniquifyForDirectory(dirPath: String, fileName: String): String {
+        if (!dirPath.startsWith("content://")) {
+            return if (dirPath.isBlank()) {
+                uniquifyPendingName(fileName)
+            } else {
+                uniquify(File(dirPath, fileName))
+            }
+        }
+        val tree = DocumentFile.fromTreeUri(context, dirPath.toUri())
+        val dot = fileName.lastIndexOf('.')
+        val stem = if (dot > 0) fileName.substring(0, dot) else fileName
+        val ext = if (dot > 0) fileName.substring(dot) else ""
+        val pending = repo.pendingFileNames(stem)
+        var candidate = fileName
+        var counter = 1
+        while (tree?.findFile(candidate) != null || candidate in pending) {
+            candidate = "${stem}_${counter++}$ext"
+        }
+        return candidate
+    }
+
+    /** MediaStore 默认目录无法用 File 查询，至少与任务表中的已保留名称去重。 */
+    private suspend fun uniquifyPendingName(fileName: String): String {
+        val dot = fileName.lastIndexOf('.')
+        val stem = if (dot > 0) fileName.substring(0, dot) else fileName
+        val ext = if (dot > 0) fileName.substring(dot) else ""
+        val pending = repo.pendingFileNames(stem)
+        var candidate = fileName
+        var counter = 1
+        while (candidate in pending) candidate = "${stem}_${counter++}$ext"
         return candidate
     }
 }

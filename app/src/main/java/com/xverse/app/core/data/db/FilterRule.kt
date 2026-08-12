@@ -8,7 +8,8 @@ import androidx.room.PrimaryKey
 enum class RuleType(val label: String) {
     CSS("CSS"),      // 隐藏选择器，如 article[data-testid="tweet"]:has(...)
     REGEX("REGEX"),  // 匹配推文文本/用户名的正则
-    STORE("STORE")   // Redux 拦截：__typename / advertiserAccount 判定
+    STORE("STORE"),  // Redux 拦截：__typename / advertiserAccount 判定
+    NETWORK("NETWORK") // AdGuard/ABP 基础网络规则，如 ||example.com^ / @@||example.com^
 }
 
 /**
