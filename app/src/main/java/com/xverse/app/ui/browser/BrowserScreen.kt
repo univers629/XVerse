@@ -361,14 +361,16 @@ private fun DownloadButton(viewModel: BrowserViewModel, modifier: Modifier = Mod
                             text = { Text("未解析到媒体") },
                             onClick = { expanded = false },
                         )
-                        else -> mediaList.forEachIndexed { idx, item ->
-                            DropdownMenuItem(
-                                text = { Text(mediaLabel(item, idx)) },
-                                onClick = {
-                                    expanded = false
-                                    viewModel.enqueueMedia(item)
-                                },
-                            )
+                        else -> Column {
+                            mediaList.forEachIndexed { idx, item ->
+                                DropdownMenuItem(
+                                    text = { Text(mediaLabel(item, idx)) },
+                                    onClick = {
+                                        expanded = false
+                                        viewModel.enqueueMedia(item)
+                                    },
+                                )
+                            }
                         }
                     }
                 }
