@@ -45,7 +45,7 @@ class AuthController(private val context: Context) {
 
     /** 登出：清空 WebView Cookie */
     fun logout(webView: XWebView?) {
-        LogStore.log(LogCategory.AUTH, "登出：清空 Cookie")
+        LogStore.log(LogCategory.AUTH, "Logout: cleared cookies")
         _username.value.takeIf { it.isNotBlank() }?.let(vault::remove)
         CookieManagerReader.clearAll(webView)
         _loggedIn.value = false
@@ -62,7 +62,7 @@ class AuthController(private val context: Context) {
         _username.value = username
         if (_loggedIn.value && vault.save(username, CookieManagerReader.cookiesFor(Constants.HOME_URL))) {
             refreshAccounts()
-            LogStore.log(LogCategory.AUTH, "已保存账户：@$username")
+            LogStore.log(LogCategory.AUTH, "Saved account: @$username")
         }
     }
 
@@ -85,7 +85,7 @@ class AuthController(private val context: Context) {
             vault.setActive(account)
             _username.value = account
             _loggedIn.value = true
-            LogStore.log(LogCategory.AUTH, "已切换账户：@$account")
+            LogStore.log(LogCategory.AUTH, "Switched account: @$account")
         }
         return restored
     }
@@ -100,7 +100,7 @@ class AuthController(private val context: Context) {
         }
         vault.remove(account)
         refreshAccounts()
-        LogStore.log(LogCategory.AUTH, "已移除账户：@$account")
+        LogStore.log(LogCategory.AUTH, "Removed account: @$account")
         return true
     }
 

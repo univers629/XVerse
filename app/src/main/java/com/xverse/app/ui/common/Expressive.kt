@@ -96,9 +96,9 @@ fun ExpressiveDeleteConfirmDialog(
     message: String,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
-    confirmLabel: String = "删除",
+    confirmLabel: String = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_delete),
 ) {
-    AlertDialog(
+    AppAlertDialog(
         onDismissRequest = onDismiss,
         shape = RoundedCornerShape(20.dp),
         icon = {
@@ -141,7 +141,7 @@ fun ExpressiveDeleteConfirmDialog(
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("取消")
+                Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_cancel))
             }
         },
     )

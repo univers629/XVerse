@@ -9,4 +9,13 @@ import com.xverse.app.di.ServiceLocator
  */
 class XVerseApp : Application() {
     val locator: ServiceLocator by lazy { ServiceLocator(this) }
+
+    override fun attachBaseContext(base: android.content.Context) {
+        val lang = com.xverse.app.core.data.repo.SettingsRepo.getSavedAppLanguage(base)
+        super.attachBaseContext(com.xverse.app.core.util.LocaleUtils.applyLocale(base, lang))
+    }
+
+    fun updateAppLocale(lang: String) {
+        com.xverse.app.core.util.LocaleUtils.applyLocale(this, lang)
+    }
 }

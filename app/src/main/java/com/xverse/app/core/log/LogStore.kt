@@ -20,14 +20,14 @@ import kotlinx.coroutines.launch
  * 内存环形缓冲 2000 条；文件按天追加，保留最近 7 天。
  * 使用 [LogStore] 记录 app 内部事件，同时写入 android.util.Log 便于 logcat 排障。
  */
-enum class LogCategory(val label: String) {
-    WEBVIEW("WebView"),
-    FILTER("过滤"),
-    DOWNLOAD("下载"),
-    AUTH("账号"),
-    HISTORY("历史"),
-    ERROR("错误"),
-    GENERAL("一般")
+enum class LogCategory(val label: String, @androidx.annotation.StringRes val labelRes: Int) {
+    WEBVIEW("WebView", com.xverse.app.R.string.logs_cat_webview),
+    FILTER("Filter", com.xverse.app.R.string.logs_cat_filter),
+    DOWNLOAD("Download", com.xverse.app.R.string.logs_cat_download),
+    AUTH("Account", com.xverse.app.R.string.logs_cat_auth),
+    HISTORY("History", com.xverse.app.R.string.logs_cat_history),
+    ERROR("Error", com.xverse.app.R.string.logs_cat_error),
+    GENERAL("General", com.xverse.app.R.string.logs_cat_general)
 }
 
 data class LogEntry(

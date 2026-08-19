@@ -88,9 +88,12 @@ fun NetworkThumb(url: String, modifier: Modifier = Modifier, thumbPath: String =
                 contentScale = ContentScale.Crop,
             )
         } else {
+            val desc = androidx.compose.ui.res.stringResource(
+                if (isVideo) com.xverse.app.R.string.content_desc_video else com.xverse.app.R.string.content_desc_media
+            )
             Icon(
                 if (isVideo) Icons.Filled.Movie else Icons.Filled.Image,
-                contentDescription = if (isVideo) "视频" else "媒体",
+                contentDescription = desc,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }

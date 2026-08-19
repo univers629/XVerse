@@ -98,18 +98,47 @@ fun SettingsScreen(
             .verticalScroll(rememberScrollState()),
     ) {
         ExpressivePageTitle(
-            title = "设置",
-            subtitle = "外观、浏览与数据偏好",
+            title = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_title),
+            subtitle = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_subtitle),
         )
 
-        SectionTitle("账户")
+        SectionTitle(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_sec_account))
         AccountSection()
 
-        SectionTitle("外观")
+        SectionTitle(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_sec_language))
+        val appLanguage by settings.appLanguage.collectAsState(initial = "system")
+        val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
+        LanguageDropdown(
+            selected = appLanguage,
+            onSelect = { v ->
+                if (v != appLanguage) {
+                    scope.launch {
+                        settings.setAppLanguage(v)
+                        (activity?.application as? com.xverse.app.XVerseApp)?.updateAppLocale(v)
+                        activity?.let { act ->
+                            com.xverse.app.core.util.LocaleUtils.applyLocale(act, v)
+                        }
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                            val localeManager = activity?.getSystemService(android.app.LocaleManager::class.java)
+                            val targetList = when (v) {
+                                "zh" -> android.os.LocaleList(java.util.Locale.SIMPLIFIED_CHINESE)
+                                "ja" -> android.os.LocaleList(java.util.Locale.JAPANESE)
+                                "en" -> android.os.LocaleList(java.util.Locale.ENGLISH)
+                                else -> android.os.LocaleList.getEmptyLocaleList()
+                            }
+                            localeManager?.applicationLocales = targetList
+                        }
+                        activity?.recreate()
+                    }
+                }
+            },
+        )
+
+        SectionTitle(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_sec_appearance))
         val hideXBottomBar by settings.hideXBottomBar.collectAsState(
             initial = com.xverse.app.core.data.repo.SettingsRepo.DEFAULT_HIDE_X_BOTTOM_BAR,
         )
-        SwitchSetting("隐藏网页内 X 底栏", hideXBottomBar) { hidden ->
+        SwitchSetting(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_hide_x_bottom_bar), hideXBottomBar) { hidden ->
             scope.launch { settings.setHideXBottomBar(hidden) }
         }
         val themeMode by settings.themeMode.collectAsState(initial = "system")
@@ -134,9 +163,9 @@ fun SettingsScreen(
             },
         )
 
-        SectionTitle("过滤")
+        SectionTitle(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_sec_filter))
         val filterEnabled by settings.filterEnabled.collectAsState(initial = true)
-        SwitchSetting("启用广告过滤", filterEnabled) {
+        SwitchSetting(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_filter_enable), filterEnabled) {
             scope.launch {
                 settings.setFilterEnabled(it)
                 CommandBus.push(com.xverse.app.BrowserCommand.ReapplyInjections)
@@ -159,7 +188,7 @@ fun SettingsScreen(
         }
         if (filterEnabled) {
             Text(
-                text = "统一控制网页广告与跟踪",
+                text = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_filter_enable_desc),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 32.dp, end = 32.dp, bottom = 6.dp),
@@ -176,12 +205,17 @@ fun SettingsScreen(
             )
             if (extensionFilterPacks.isNotEmpty()) {
                 val count = extensionFilterPacks.sumOf { it.ruleCount }
+                val defaultPackName = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_filter_ext_header)
                 val packName = if (extensionFilterPacks.size == 1) {
                     extensionFilterPacks.first().name
                 } else {
-                    "扩展"
+                    defaultPackName
                 }
-                SwitchSetting("$packName 集成规则（$count 条）", filterExtensionDefaults, subRow = true) { on ->
+                SwitchSetting(
+                    androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_filter_ext_integrated_rules, packName, count),
+                    filterExtensionDefaults,
+                    subRow = true,
+                ) { on ->
                     scope.launch {
                         settings.setFilterExtensionDefaults(on)
                         CommandBus.push(com.xverse.app.BrowserCommand.ReapplyInjections)
@@ -192,7 +226,7 @@ fun SettingsScreen(
                         pack.groups.forEach { group ->
                             val key = "${pack.extensionId}:${group.filterId}"
                             SwitchSetting(
-                                label = "${group.name}（${group.ruleCount} 条）",
+                                label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_ext_group_rule_count, group.name, group.ruleCount),
                                 checked = key !in disabledExtensionGroups,
                                 subRow = true,
                                 nested = true,
@@ -206,13 +240,13 @@ fun SettingsScreen(
                     }
                 }
             }
-            SwitchSetting("过滤带字幕（CC）视频", filterCcVideos, subRow = true) { on ->
+            SwitchSetting(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_filter_cc_videos), filterCcVideos, subRow = true) { on ->
                 scope.launch {
                     settings.setFilterCcVideos(on)
                     CommandBus.push(com.xverse.app.BrowserCommand.SetCcFilter(on))
                 }
             }
-            SwitchSetting("过滤 AI 生成内容", filterAiLabel, subRow = true) { on ->
+            SwitchSetting(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_filter_ai_label), filterAiLabel, subRow = true) { on ->
                 scope.launch {
                     settings.setFilterAiLabel(on)
                     CommandBus.push(com.xverse.app.BrowserCommand.SetAiFilter(on))
@@ -222,10 +256,10 @@ fun SettingsScreen(
             FilterRulesSection()
         }
 
-        SectionTitle("下载")
+        SectionTitle(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_sec_download))
         DownloadPathsSection()
 
-        SectionTitle("开发")
+        SectionTitle(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_sec_dev))
         // 日志二级页入口
         Row(
             modifier = Modifier
@@ -238,22 +272,22 @@ fun SettingsScreen(
                     .weight(1f)
                     .padding(end = 12.dp),
             ) {
-                Text("运行日志", style = MaterialTheme.typography.titleSmall)
+                Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_logs_title), style = MaterialTheme.typography.titleSmall)
                 Text(
-                    text = "分类筛选 / 导出",
+                    text = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_logs_desc),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             SettingsTextActionButton(
-                label = "查看",
+                label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_action_view),
                 onClick = { sub = "logs" },
             )
         }
 
-        SectionTitle("关于")
+        SectionTitle(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_sec_about))
         Text(
-            text = "XVerse 0.4.0\n仅面向 x.com 网页版。",
+            text = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_about_desc, com.xverse.app.BuildConfig.VERSION_NAME),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 32.dp, vertical = 8.dp),
@@ -272,10 +306,10 @@ private fun LogsSubPage(modifier: Modifier, onBack: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回设置")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_back_to_settings))
             }
             Text(
-                text = "运行日志",
+                text = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_logs_title),
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.padding(horizontal = 8.dp),
             )
@@ -339,8 +373,8 @@ private fun AccountSection() {
                     Text(
                         text = when {
                             isLoggedIn && username.isNotBlank() -> "@$username"
-                            isLoggedIn -> "正在识别用户名…"
-                            else -> "未登录"
+                            isLoggedIn -> androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_account_identifying)
+                            else -> androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_account_not_logged_in)
                         },
                         style = MaterialTheme.typography.titleSmall,
                         maxLines = 1,
@@ -349,13 +383,15 @@ private fun AccountSection() {
                 },
                 supportingContent = {
                     Text(
-                        if (isLoggedIn) "当前登录账户" else "登录后可同步保存多个账户",
+                        if (isLoggedIn) androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_account_current_logged_in)
+                        else androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_account_multi_hint),
                         style = MaterialTheme.typography.bodySmall,
                     )
                 },
                 trailingContent = {
                     SettingsTonalActionButton(
-                        label = if (isLoggedIn) "退出登录" else "登录",
+                        label = if (isLoggedIn) androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_logout)
+                        else androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_login),
                         onClick = {
                             scope.launch {
                                 if (isLoggedIn) showLogoutConfirm = true else openLogin()
@@ -371,7 +407,7 @@ private fun AccountSection() {
             )
 
             Text(
-                text = "已保存账户",
+                text = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_account_saved_title),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
@@ -399,7 +435,7 @@ private fun AccountSection() {
                                     MaterialTheme.colorScheme.secondary
                                 } else {
                                     MaterialTheme.colorScheme.surfaceContainerHighest
-                                },
+                                }
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Text(
@@ -425,7 +461,7 @@ private fun AccountSection() {
                         supportingContent = if (current) {
                             {
                                 Text(
-                                    text = "当前账户",
+                                    text = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_account_current_badge),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -436,7 +472,7 @@ private fun AccountSection() {
                         trailingContent = if (current) null else {
                             {
                                 SettingsTonalActionButton(
-                                    label = "切换",
+                                    label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_account_switch),
                                     onClick = {
                                         scope.launch {
                                             if (locator.authController.switchTo(account.username)) {
@@ -467,7 +503,7 @@ private fun AccountSection() {
             ) {
                 Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                 Text(
-                    "登录其他账户",
+                    androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_account_login_other),
                     style = MaterialTheme.typography.labelMedium,
                     modifier = Modifier.padding(start = 8.dp),
                 )
@@ -476,11 +512,11 @@ private fun AccountSection() {
     }
 
     if (showLogoutConfirm) {
-        AlertDialog(
+        com.xverse.app.ui.common.AppAlertDialog(
             onDismissRequest = { showLogoutConfirm = false },
             shape = RoundedCornerShape(16.dp),
-            title = { Text("登出") },
-            text = { Text("确定要退出登录吗？将清除 x.com 的登录 Cookie。") },
+            title = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_logout_title)) },
+            text = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_logout_confirm)) },
             confirmButton = {
                 TextButton(onClick = {
                     showLogoutConfirm = false
@@ -489,12 +525,12 @@ private fun AccountSection() {
                         locator.authController.logout(null)
                     }
                 }) {
-                    Text("登出")
+                    Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_logout))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showLogoutConfirm = false }) {
-                    Text("取消")
+                    Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_cancel))
                 }
             },
         )
@@ -520,6 +556,24 @@ private fun SectionTitle(title: String) {
     }
 }
 
+@Composable
+private fun LanguageDropdown(selected: String, onSelect: (String) -> Unit) {
+    val options = listOf(
+        "system" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_lang_system),
+        "zh" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_lang_zh),
+        "en" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_lang_en),
+        "ja" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_lang_ja),
+    )
+    val defaultLabel = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_lang_system)
+    val value = options.firstOrNull { it.first == selected }?.second ?: defaultLabel
+    SettingDropdown(
+        label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_language),
+        value = value,
+        options = options,
+        onSelect = onSelect,
+    )
+}
+
 /**
  * 颜色模式下拉：设置行样式 —— 左侧「颜色模式」标签 + 右侧按钮（当前值 + 箭头）。
  * DropdownMenu 的 popup 锚定右侧按钮的 wrap-content Box，随按钮靠右落下，从右侧展开。
@@ -528,12 +582,18 @@ private fun SectionTitle(title: String) {
 @Composable
 private fun ThemeDropdown(selected: String, onSelect: (String) -> Unit) {
     val options = listOf(
-        "system" to "跟随系统",
-        "light" to "浅色模式",
-        "dark" to "深色模式",
+        "system" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_theme_system),
+        "light" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_theme_light),
+        "dark" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_theme_dark),
     )
-    val value = options.firstOrNull { it.first == selected }?.second ?: "跟随系统"
-    SettingDropdown(label = "颜色模式", value = value, options = options, onSelect = onSelect)
+    val defaultLabel = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_theme_system)
+    val value = options.firstOrNull { it.first == selected }?.second ?: defaultLabel
+    SettingDropdown(
+        label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_theme_mode),
+        value = value,
+        options = options,
+        onSelect = onSelect,
+    )
 }
 
 /**
@@ -544,12 +604,13 @@ private fun ThemeDropdown(selected: String, onSelect: (String) -> Unit) {
 @Composable
 private fun FilterModeDropdown(selected: String, onSelect: (String) -> Unit) {
     val options = listOf(
-        "mask" to "占位 + 可点击验证",
-        "strip" to "完全不加载广告",
+        "mask" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_filter_mode_mask),
+        "strip" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_filter_mode_strip),
     )
-    val value = options.firstOrNull { it.first == selected }?.second ?: "占位 + 可点击验证"
+    val defaultLabel = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_filter_mode_mask)
+    val value = options.firstOrNull { it.first == selected }?.second ?: defaultLabel
     SettingDropdown(
-        label = "过滤方式",
+        label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_filter_mode),
         value = value,
         options = options,
         onSelect = onSelect,
@@ -567,6 +628,8 @@ private fun SettingDropdown(
     onSelect: (String) -> Unit,
     subRow: Boolean = false,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val config = androidx.compose.ui.platform.LocalConfiguration.current
     var expanded by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
@@ -594,15 +657,20 @@ private fun SettingDropdown(
                 expanded = expanded,
                 onDismissRequest = { expanded = false },
             ) {
-                SmoothDropdownContent(expanded = expanded) {
-                    options.forEach { (optionValue, optionLabel) ->
-                        DropdownMenuItem(
-                            text = { Text(optionLabel, style = MaterialTheme.typography.titleSmall) },
-                            onClick = {
-                                expanded = false
-                                onSelect(optionValue)
-                            },
-                        )
+                androidx.compose.runtime.CompositionLocalProvider(
+                    androidx.compose.ui.platform.LocalContext provides context,
+                    androidx.compose.ui.platform.LocalConfiguration provides config,
+                ) {
+                    SmoothDropdownContent(expanded = expanded) {
+                        options.forEach { (optionValue, optionLabel) ->
+                            DropdownMenuItem(
+                                text = { Text(optionLabel, style = MaterialTheme.typography.titleSmall) },
+                                onClick = {
+                                    expanded = false
+                                    onSelect(optionValue)
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -669,15 +737,27 @@ private fun DownloadPathsSection() {
         picking = null
     }
 
-    DownloadPathRow("图片", imageDir, "Pictures/XVerse") {
+    DownloadPathRow(
+        label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_filter_image),
+        uri = imageDir,
+        defaultPath = "Pictures/XVerse",
+    ) {
         picking = DownloadPathType.IMAGE
         picker.launch(null)
     }
-    DownloadPathRow("GIF", gifDir, "Pictures/XVerse") {
+    DownloadPathRow(
+        label = "GIF",
+        uri = gifDir,
+        defaultPath = "Pictures/XVerse",
+    ) {
         picking = DownloadPathType.GIF
         picker.launch(null)
     }
-    DownloadPathRow("视频", videoDir, "Movies/XVerse") {
+    DownloadPathRow(
+        label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_filter_video),
+        uri = videoDir,
+        defaultPath = "Movies/XVerse",
+    ) {
         picking = DownloadPathType.VIDEO
         picker.launch(null)
     }
@@ -687,10 +767,10 @@ private fun DownloadPathsSection() {
 private fun DownloadPathRow(label: String, uri: String, defaultPath: String, onPick: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val hint = if (uri.isBlank()) {
-        "默认：$defaultPath"
+        androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_download_default_path, defaultPath)
     } else {
         val name = runCatching { DocumentFile.fromTreeUri(context, uri.toUri())?.name }.getOrNull()
-        "已选：${name ?: uri}"
+        androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_download_selected_path, name ?: uri)
     }
     Row(
         modifier = Modifier
@@ -712,7 +792,10 @@ private fun DownloadPathRow(label: String, uri: String, defaultPath: String, onP
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        SettingsActionButton(label = "选择路径", onClick = onPick)
+        SettingsActionButton(
+            label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_action_pick_path),
+            onClick = onPick,
+        )
     }
 }
 
@@ -777,9 +860,9 @@ private fun FilterRulesSection() {
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 32.dp, vertical = 8.dp),
-        label = { Text("自定义过滤规则") },
-        placeholder = { Text("关键词、||域名^ 或 x.com##选择器") },
-        supportingText = { Text("兼容 AdGuard/ABP 基础网络规则与元素隐藏规则") },
+        label = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_custom_rules_title)) },
+        placeholder = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_custom_rules_placeholder)) },
+        supportingText = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_custom_rules_supporting)) },
         singleLine = true,
         shape = RoundedCornerShape(18.dp),
         trailingIcon = {
@@ -796,13 +879,13 @@ private fun FilterRulesSection() {
                     }
                 },
                 enabled = keyword.isNotBlank(),
-            ) { Icon(Icons.Filled.Add, contentDescription = "添加屏蔽词") }
+            ) { Icon(Icons.Filled.Add, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_action_add_rule)) }
         },
     )
 
     if (userRules.isNotEmpty()) {
         Text(
-            text = "已添加的规则 · 点按启用或停用",
+            text = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_custom_rules_added_title),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 32.dp, end = 32.dp, top = 2.dp, bottom = 6.dp),
@@ -816,6 +899,7 @@ private fun FilterRulesSection() {
 private fun UserRuleChips(rules: List<com.xverse.app.core.data.db.FilterRule>) {
     val scope = rememberCoroutineScope()
     val locator = ServiceLocator.from(LocalContext.current)
+    val blockPrefix = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_rule_block_prefix)
     FlowRow(
         modifier = Modifier.padding(start = 32.dp, end = 32.dp, bottom = 8.dp),
         horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
@@ -827,7 +911,7 @@ private fun UserRuleChips(rules: List<com.xverse.app.core.data.db.FilterRule>) {
                 onClick = { scope.launch { locator.filterRepo.setEnabled(rule.id, !rule.enabled) } },
                 label = {
                     Text(
-                        rule.description.removePrefix("屏蔽词：").ifBlank { rule.pattern },
+                        rule.description.removePrefix(blockPrefix).ifBlank { rule.pattern },
                         style = MaterialTheme.typography.labelLarge,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -842,7 +926,7 @@ private fun UserRuleChips(rules: List<com.xverse.app.core.data.db.FilterRule>) {
                         if (rule.enabled) {
                             Icon(
                                 Icons.Filled.Done,
-                                contentDescription = "已启用",
+                                contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_rule_status_enabled),
                                 modifier = Modifier.size(18.dp),
                             )
                         }
@@ -859,7 +943,7 @@ private fun UserRuleChips(rules: List<com.xverse.app.core.data.db.FilterRule>) {
                     ) {
                         Icon(
                             Icons.Filled.Close,
-                            contentDescription = "删除屏蔽词",
+                            contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_action_delete_word),
                             modifier = Modifier.size(16.dp),
                         )
                     }
@@ -887,12 +971,17 @@ private fun FilterRuleRow(
         ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-            Text(
-                text = rule.description.ifBlank { rule.pattern },
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 1,
-            )
+        val label = if (rule.builtin) {
+            androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_filter_builtin_promoted_keywords)
+        } else {
+            rule.description.ifBlank { rule.pattern }
+        }
+        Text(
+            text = label,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+        )
             Switch(
                 checked = rule.enabled,
                 onCheckedChange = { enabled ->
@@ -907,7 +996,7 @@ private fun FilterRuleRow(
                 }) {
                     Icon(
                         Icons.Filled.Close,
-                        contentDescription = "删除规则",
+                        contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.settings_action_delete_rule),
                         tint = MaterialTheme.colorScheme.error,
                     )
                 }

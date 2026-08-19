@@ -29,7 +29,7 @@ class DownloadWorker(
     override suspend fun doWork(): Result {
         val repo = locator.downloadRepo
         val task = repo.findById(taskId) ?: run {
-            LogStore.log(LogCategory.DOWNLOAD, "任务不存在，跳过: $taskId")
+            LogStore.log(LogCategory.DOWNLOAD, "Task not found, skipping: $taskId")
             return Result.success()
         }
         // 已被暂停 / 删除：直接结束，不启动前台
@@ -41,7 +41,7 @@ class DownloadWorker(
         setForeground(getForegroundInfo())
 
         repo.setStatus(task.id, DownloadStatus.RUNNING)
-        LogStore.log(LogCategory.DOWNLOAD, "Worker 启动: ${task.fileName}")
+        LogStore.log(LogCategory.DOWNLOAD, "Worker started: ${task.fileName}")
 
         val status = locator.downloader.download(task) { pct ->
             setForeground(getForegroundInfo())
@@ -50,7 +50,7 @@ class DownloadWorker(
         return when (status) {
             DownloadStatus.DONE -> {
                 locator.downloadNotifier.finish(applicationContext, taskId.toInt(), task.copy(status = DownloadStatus.DONE))
-                toast("下载完成：${task.fileName}")
+                toast(com.xverse.app.core.util.LocaleUtils.getString(applicationContext, com.xverse.app.R.string.download_toast_done, task.fileName))
                 Result.success()
             }
             DownloadStatus.PAUSED -> {
@@ -60,7 +60,7 @@ class DownloadWorker(
             }
             DownloadStatus.FAILED -> {
                 locator.downloadNotifier.finish(applicationContext, taskId.toInt(), task.copy(status = DownloadStatus.FAILED))
-                toast("下载失败：${task.fileName}")
+                toast(com.xverse.app.core.util.LocaleUtils.getString(applicationContext, com.xverse.app.R.string.download_toast_failed, task.fileName))
                 Result.failure()
             }
             else -> Result.success()
@@ -79,7 +79,7 @@ class DownloadWorker(
      *  InvalidForegroundServiceTypeException 闪退。minSdk 31，类型参数始终生效。 */
     override suspend fun getForegroundInfo(): ForegroundInfo {
         val task = locator.downloadRepo.findById(taskId)
-            ?: DownloadTask(tweetUrl = "", mediaUrl = "", fileName = "准备中…", status = DownloadStatus.QUEUED)
+            ?: DownloadTask(tweetUrl = "", mediaUrl = "", fileName = com.xverse.app.core.util.LocaleUtils.getString(applicationContext, com.xverse.app.R.string.download_preparing), status = DownloadStatus.QUEUED)
         val n = DownloadNotifier.foreground(applicationContext, taskId.toInt(), task)
         return ForegroundInfo(
             taskId.toInt(),

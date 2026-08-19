@@ -63,13 +63,13 @@ class MediaParser(private val context: Context) {
         val items = parseGraphQLMedia(json)
         if (items.isNotEmpty()) {
             synchronized(cachedMedia) { cachedMedia[tweetId] = items }
-            LogStore.log(LogCategory.DOWNLOAD, "GraphQL 缓存 ${items.size} 个媒体直链（tweet $tweetId）")
+            LogStore.log(LogCategory.DOWNLOAD, "GraphQL cached ${items.size} media URLs (tweet $tweetId)")
         }
     }
 
     /** 解析推文 URL 的全部媒体直链（优先按 tweetId 命中的 GraphQL 缓存，兜底页面 HTML） */
     suspend fun parse(tweetUrl: String): List<MediaItem> = withContext(Dispatchers.IO) {
-        LogStore.log(LogCategory.DOWNLOAD, "解析推文媒体: $tweetUrl")
+        LogStore.log(LogCategory.DOWNLOAD, "Parsing tweet media: $tweetUrl")
         // mediaViewer 里真正要下载的推文在 currentTweet 参数（滑动浏览），路径 id 只是宿主推文
         val norm = canonicalTweetUrl(tweetUrl)
         // 从规范 URL 提取 tweetId，只取属于该推文的缓存（引用/时间线里的其他推文不串入）
@@ -77,21 +77,21 @@ class MediaParser(private val context: Context) {
         val tweetId = parsed?.second ?: ""
         val cached = if (tweetId.isNotBlank()) synchronized(cachedMedia) { cachedMedia[tweetId] } else null
         if (cached != null && cached.isNotEmpty()) {
-            LogStore.log(LogCategory.DOWNLOAD, "命中 GraphQL 缓存 ${cached.size} 个（tweet $tweetId）")
+            LogStore.log(LogCategory.DOWNLOAD, "Hit GraphQL cache ${cached.size} items (tweet $tweetId)")
             return@withContext cached
         }
         try {
             val cookie = com.xverse.app.core.auth.CookieManagerReader.cookiesForFromBackground(norm)
             val html = fetch(norm, cookie)
             if (html.isNullOrBlank()) {
-                LogStore.log(LogCategory.DOWNLOAD, "拉取推文页失败")
+                LogStore.log(LogCategory.DOWNLOAD, "Failed to fetch tweet page")
                 return@withContext emptyList()
             }
             val items = extractMedia(html)
-            LogStore.log(LogCategory.DOWNLOAD, "解析到 ${items.size} 个媒体")
+            LogStore.log(LogCategory.DOWNLOAD, "Parsed ${items.size} media items")
             items
         } catch (e: Exception) {
-            LogStore.error("解析推文媒体异常", e)
+            LogStore.error("Exception parsing tweet media", e)
             emptyList()
         }
     }
@@ -103,7 +103,7 @@ class MediaParser(private val context: Context) {
             val root = JSONObject(json)
             walkGraphQL(root, out, stopAfterFirst = true)
         } catch (e: Exception) {
-            LogStore.error("GraphQL 媒体解析失败", e)
+            LogStore.error("GraphQL media parsing failed", e)
         }
         return out.distinctBy { it.url }
     }
@@ -331,7 +331,7 @@ class MediaParser(private val context: Context) {
                             val h = oi.optInt("height", 0)
                             if (w > 0 && h > 0) "${w}x$h" else ""
                         } else ""
-                        val label = dim.ifEmpty { "原图" }
+                        val label = dim
                         out.add(
                             MediaItem(
                                 url = orig,

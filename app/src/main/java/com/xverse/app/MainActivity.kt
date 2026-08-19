@@ -74,7 +74,35 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission()
     ) { /* 用户选择后无需额外处理 */ }
 
+    override fun attachBaseContext(newBase: android.content.Context) {
+        val lang = com.xverse.app.core.data.repo.SettingsRepo.getSavedAppLanguage(newBase)
+        val targetLocale = com.xverse.app.core.util.LocaleUtils.getLocale(lang)
+        java.util.Locale.setDefault(targetLocale)
+        val conf = android.content.res.Configuration(newBase.resources.configuration)
+        conf.setLocale(targetLocale)
+        if (android.os.Build.VERSION.SDK_INT >= 24) {
+            conf.setLocales(android.os.LocaleList(targetLocale))
+        }
+        applyOverrideConfiguration(conf)
+        val localizedBase = newBase.createConfigurationContext(conf)
+        super.attachBaseContext(localizedBase)
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        val lang = com.xverse.app.core.data.repo.SettingsRepo.getSavedAppLanguage(this)
+        val targetLocale = com.xverse.app.core.util.LocaleUtils.getLocale(lang)
+        newConfig.setLocale(targetLocale)
+        if (android.os.Build.VERSION.SDK_INT >= 24) {
+            newConfig.setLocales(android.os.LocaleList(targetLocale))
+        }
+        super.onConfigurationChanged(newConfig)
+        com.xverse.app.core.util.LocaleUtils.applyLocale(this, lang)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        val lang = com.xverse.app.core.data.repo.SettingsRepo.getSavedAppLanguage(this)
+        com.xverse.app.core.util.LocaleUtils.applyLocale(this, lang)
+        (application as? com.xverse.app.XVerseApp)?.updateAppLocale(lang)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         // 请求通知权限（仅 33+ 需要）
@@ -131,13 +159,15 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             try {
                 locator.extensionImporter.importFile(uri)
-                Toast.makeText(this@MainActivity, "扩展已导入", Toast.LENGTH_SHORT).show()
+                val okMsg = com.xverse.app.core.util.LocaleUtils.getString(this@MainActivity, R.string.ext_toast_imported)
+                Toast.makeText(this@MainActivity, okMsg, Toast.LENGTH_SHORT).show()
                 mainViewModel.selectTab(XTab.EXTENSIONS)
             } catch (e: Exception) {
-                LogStore.log(LogCategory.FILTER, "扩展导入失败: ${e.message}")
+                LogStore.log(LogCategory.FILTER, "Extension import failed: ${e.message}")
+                val errMsg = com.xverse.app.core.util.LocaleUtils.getString(this@MainActivity, R.string.ext_toast_import_failed, e.message ?: "")
                 Toast.makeText(
                     this@MainActivity,
-                    "导入失败：${e.message}",
+                    errMsg,
                     Toast.LENGTH_LONG,
                 ).show()
             }
@@ -148,6 +178,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen(mainViewModel: MainViewModel) {
     val themeMode by mainViewModel.themeMode.collectAsState(initial = "system")
+    val appLanguage by mainViewModel.appLanguage.collectAsState(initial = "system")
     val customMonetEnabled by mainViewModel.customMonetEnabled.collectAsState(initial = false)
     val customMonetColor by mainViewModel.customMonetColor.collectAsState(
         initial = com.xverse.app.core.data.repo.SettingsRepo.DEFAULT_MONET_COLOR_ARGB,
@@ -199,47 +230,92 @@ fun MainScreen(mainViewModel: MainViewModel) {
         }
     }
 
-    XVerseTheme(
-        darkTheme = darkTheme,
-        dynamicColor = !customMonetEnabled,
-        seedColor = androidx.compose.ui.graphics.Color(customMonetColor),
+    val currentContext = androidx.compose.ui.platform.LocalContext.current
+    val currentConfiguration = androidx.compose.ui.platform.LocalConfiguration.current
+    val registryOwner = remember(currentContext) {
+        currentContext as? androidx.activity.result.ActivityResultRegistryOwner
+    }
+
+    val targetLocale = remember(appLanguage) {
+        val systemLocale = if (android.os.Build.VERSION.SDK_INT >= 24) {
+            android.content.res.Resources.getSystem().configuration.locales[0] ?: java.util.Locale.getDefault()
+        } else {
+            @Suppress("DEPRECATION")
+            android.content.res.Resources.getSystem().configuration.locale ?: java.util.Locale.getDefault()
+        }
+        when (appLanguage) {
+            "zh" -> java.util.Locale.SIMPLIFIED_CHINESE
+            "ja" -> java.util.Locale.JAPANESE
+            "en" -> java.util.Locale.ENGLISH
+            else -> systemLocale
+        }
+    }
+
+    val localizedConfiguration = remember(targetLocale, currentConfiguration) {
+        android.content.res.Configuration(currentConfiguration).apply {
+            setLocale(targetLocale)
+            setLocales(android.os.LocaleList(targetLocale))
+        }
+    }
+
+    val localizedContext = remember(targetLocale, currentContext, localizedConfiguration) {
+        currentContext.createConfigurationContext(localizedConfiguration)
+    }
+
+    val locals = remember(localizedConfiguration, localizedContext, registryOwner) {
+        buildList {
+            add(androidx.compose.ui.platform.LocalConfiguration provides localizedConfiguration)
+            add(androidx.compose.ui.platform.LocalContext provides localizedContext)
+            if (registryOwner != null) {
+                add(androidx.activity.compose.LocalActivityResultRegistryOwner provides registryOwner)
+            }
+        }
+    }
+
+    androidx.compose.runtime.CompositionLocalProvider(
+        *locals.toTypedArray(),
     ) {
-        Surface(modifier = Modifier.fillMaxSize()) {
-            Scaffold(
-                bottomBar = {
-                    NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        tonalElevation = 3.dp,
-                    ) {
-                        XTab.entries.forEach { tab ->
-                            NavigationBarItem(
-                                selected = selectedTab == tab,
-                                onClick = {
-                                    if (selectedTab == tab) {
-                                        // 重复点击当前 Tab：回到首页
-                                        if (tab == XTab.HOME) mainViewModel.goHome()
-                                    } else {
-                                        navigateTo(tab)
-                                    }
-                                },
-                                icon = {
-                                    BadgedIcon(
-                                        tab = tab,
-                                        selected = selectedTab == tab,
-                                    )
-                                },
-                                label = { Text(tab.label) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
-                                    selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                    selectedTextColor = MaterialTheme.colorScheme.onSurface,
-                                ),
-                            )
+        XVerseTheme(
+            darkTheme = darkTheme,
+            dynamicColor = !customMonetEnabled,
+            seedColor = androidx.compose.ui.graphics.Color(customMonetColor),
+        ) {
+            Surface(modifier = Modifier.fillMaxSize()) {
+                Scaffold(
+                    bottomBar = {
+                        NavigationBar(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            tonalElevation = 3.dp,
+                        ) {
+                            XTab.entries.forEach { tab ->
+                                NavigationBarItem(
+                                    selected = selectedTab == tab,
+                                    onClick = {
+                                        if (selectedTab == tab) {
+                                            // 重复点击当前 Tab：回到首页
+                                            if (tab == XTab.HOME) mainViewModel.goHome()
+                                        } else {
+                                            navigateTo(tab)
+                                        }
+                                    },
+                                    icon = {
+                                        BadgedIcon(
+                                            tab = tab,
+                                            selected = selectedTab == tab,
+                                        )
+                                    },
+                                    label = { Text(androidx.compose.ui.res.stringResource(tab.labelRes)) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
+                                        selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        selectedTextColor = MaterialTheme.colorScheme.onSurface,
+                                    ),
+                                )
+                            }
                         }
-                    }
-                },
-                contentWindowInsets = WindowInsets(0, 0, 0, 0),
-            ) { padding ->
+                    },
+                    contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                ) { padding ->
                 // 五个屏幕全部保持组合（首页 WebView 常驻保活），非活动 Tab 隐藏。
                 // 首页单独处理：BrowserScreen 始终组合，active 参数控制 WebView visibility
                 // （GONE 保留页面状态，不销毁不重载）；其余纯 Compose 页数据从 Room/
@@ -328,12 +404,15 @@ fun MainScreen(mainViewModel: MainViewModel) {
         }
     }
 }
+}
+
 
 @Composable
 private fun BadgedIcon(tab: XTab, selected: Boolean) {
     val icon = if (selected) tab.selectedIcon else tab.icon
     androidx.compose.material3.Icon(
         imageVector = icon,
-        contentDescription = tab.label,
+        contentDescription = androidx.compose.ui.res.stringResource(tab.labelRes),
     )
 }
+

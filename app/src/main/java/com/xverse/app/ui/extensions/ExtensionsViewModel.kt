@@ -65,11 +65,11 @@ class ExtensionsViewModel(private val locator: ServiceLocator) : ViewModel() {
         viewModelScope.launch {
             try {
                 val extId = locator.extensionImporter.importFile(uri)
-                _importMessage.value = "扩展已导入"
+                _importMessage.value = com.xverse.app.core.util.LocaleUtils.getString(locator.appContext, com.xverse.app.R.string.ext_toast_imported)
                 CommandBus.push(BrowserCommand.Reload)
             } catch (e: Exception) {
-                _importMessage.value = "导入失败：${e.message}"
-                LogStore.log(LogCategory.FILTER, "扩展导入失败: ${e.message}")
+                _importMessage.value = com.xverse.app.core.util.LocaleUtils.getString(locator.appContext, com.xverse.app.R.string.ext_toast_import_failed, e.message ?: "")
+                LogStore.log(LogCategory.FILTER, "Extension import failed: ${e.message}")
             } finally {
                 _importing.value = false
             }
@@ -82,11 +82,11 @@ class ExtensionsViewModel(private val locator: ServiceLocator) : ViewModel() {
         viewModelScope.launch {
             try {
                 val extId = locator.extensionImporter.importFromUrl(input)
-                _importMessage.value = "扩展已导入"
+                _importMessage.value = com.xverse.app.core.util.LocaleUtils.getString(locator.appContext, com.xverse.app.R.string.ext_toast_imported)
                 CommandBus.push(BrowserCommand.Reload)
             } catch (e: Exception) {
-                _importMessage.value = "导入失败：${e.message}"
-                LogStore.log(LogCategory.FILTER, "扩展链接导入失败: ${e.message}")
+                _importMessage.value = com.xverse.app.core.util.LocaleUtils.getString(locator.appContext, com.xverse.app.R.string.ext_toast_import_failed, e.message ?: "")
+                LogStore.log(LogCategory.FILTER, "Extension URL import failed: ${e.message}")
             } finally {
                 _importing.value = false
             }

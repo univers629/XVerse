@@ -20,6 +20,7 @@
         android:fullBackupContent="@xml/backup_rules"
         android:supportsRtl="true"
         android:usesCleartextTraffic="false"
+        android:localeConfig="@xml/locales_config"
         android:theme="@style/Theme.XVerse">
 
         <activity

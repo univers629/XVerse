@@ -26,6 +26,11 @@ class SettingsRepo(private val context: Context) {
         const val DEFAULT_FILTER_EXTENSION_RULES_ENABLED = false
         const val DEFAULT_FILTER_AI_LABEL_ENABLED = false
         const val DEFAULT_FILTER_MODE = "mask"
+
+        fun getSavedAppLanguage(context: Context): String {
+            return context.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
+                .getString("app_language", "system") ?: "system"
+        }
     }
 
     private object Keys {
@@ -43,6 +48,7 @@ class SettingsRepo(private val context: Context) {
         val DOWNLOAD_NOTIFY = booleanPreferencesKey("download_notify")
 
         val THEME_MODE = stringPreferencesKey("theme_mode")          // system / light / dark
+        val APP_LANGUAGE = stringPreferencesKey("app_language")      // system / zh / ja / en
         val HIDE_X_BOTTOM_BAR = booleanPreferencesKey("hide_x_bottom_bar")
         val CUSTOM_MONET_ENABLED = booleanPreferencesKey("custom_monet_enabled")
         val CUSTOM_MONET_COLOR = intPreferencesKey("custom_monet_color")
@@ -92,6 +98,7 @@ class SettingsRepo(private val context: Context) {
 
     // ---- 外观 ----
     val themeMode: Flow<String> = context.dataStore.data.map { it[Keys.THEME_MODE] ?: "system" }
+    val appLanguage: Flow<String> = context.dataStore.data.map { it[Keys.APP_LANGUAGE] ?: "system" }
     val hideXBottomBar: Flow<Boolean> = context.dataStore.data.map {
         it[Keys.HIDE_X_BOTTOM_BAR] ?: DEFAULT_HIDE_X_BOTTOM_BAR
     }
@@ -103,6 +110,13 @@ class SettingsRepo(private val context: Context) {
     }
 
     suspend fun setThemeMode(v: String) = context.dataStore.edit { it[Keys.THEME_MODE] = v }
+    suspend fun setAppLanguage(v: String) {
+        context.getSharedPreferences("app_settings", android.content.Context.MODE_PRIVATE)
+            .edit()
+            .putString("app_language", v)
+            .commit()
+        context.dataStore.edit { it[Keys.APP_LANGUAGE] = v }
+    }
     suspend fun setHideXBottomBar(v: Boolean) = context.dataStore.edit {
         it[Keys.HIDE_X_BOTTOM_BAR] = v
     }

@@ -220,7 +220,7 @@ object ExtensionFilterPackStore {
         filtersDir.deleteRecursively()
         LogStore.log(
             LogCategory.FILTER,
-            "已提取 ${summary.name} 默认规则 ${summary.ruleCount} 条（过滤器 ${selectedIds.joinToString()}）",
+            "Extracted ${summary.name} default rules: ${summary.ruleCount} items (filters ${selectedIds.joinToString()})",
         )
         return summary
     }
@@ -301,7 +301,7 @@ object ExtensionFilterPackStore {
         ).also { summary ->
             LogStore.log(
                 LogCategory.FILTER,
-                "已流式提取 ${summary.name} MV3 默认规则 ${summary.ruleCount} 条（过滤器 ${foundIds.joinToString()}）",
+                "Stream-extracted ${summary.name} MV3 default rules: ${summary.ruleCount} items (filters ${foundIds.joinToString()})",
             )
         }
     }
@@ -532,10 +532,10 @@ object ExtensionFilterPackStore {
     )
 
     private fun filterDisplayName(filterId: Int): String = when (filterId) {
-        2 -> "AdGuard 基础过滤器"
-        10 -> "搜索广告与自推广放行"
-        11 -> "AdGuard 移动广告过滤器"
-        224 -> "AdGuard 中文过滤器"
-        else -> "AdGuard 过滤器 $filterId"
+        2 -> "AdGuard Base Filter"
+        10 -> "Search Ads & Self-Promotion"
+        11 -> "AdGuard Mobile Filter"
+        224 -> "AdGuard Chinese Filter"
+        else -> "AdGuard Filter $filterId"
     }
 }

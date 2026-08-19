@@ -110,8 +110,12 @@ fun ExtensionsScreen(
 
     Column(modifier = modifier.fillMaxSize()) {
         ExpressivePageTitle(
-            title = "扩展",
-            subtitle = if (extensions.isEmpty()) "为 x.com 增加自己的能力" else "${extensions.size} 个已导入扩展",
+            title = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_title),
+            subtitle = if (extensions.isEmpty()) {
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_subtitle_empty)
+            } else {
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_subtitle_count, extensions.size)
+            },
             actions = {
                 if (importing) {
                     CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
@@ -120,7 +124,7 @@ fun ExtensionsScreen(
                 Button(onClick = { showImportDialog = true }, shape = MaterialTheme.shapes.extraLarge) {
                     Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("导入")
+                    Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_btn_import))
                 }
             },
         )
@@ -128,8 +132,8 @@ fun ExtensionsScreen(
         if (extensions.isEmpty() && !importing) {
             ExpressiveEmptyState(
                 icon = Icons.Filled.Extension,
-                title = "还没有扩展",
-                description = "导入 .crx/.zip、.user.js，或粘贴 Chrome/Edge 商店链接、扩展 ID、直链。",
+                title = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_empty_title),
+                description = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_empty_desc),
                 modifier = Modifier.fillMaxSize(),
             )
             return
@@ -155,12 +159,12 @@ fun ExtensionsScreen(
 /** 来源：分组分隔行的标题与图标。source 字段值对应 ExtensionEntity.source */
 private enum class ExtensionSource(
     val source: String,
-    val label: String,
+    @androidx.annotation.StringRes val labelRes: Int,
     val iconRes: Int,
 ) {
-    USERSCRIPT("USERSCRIPT", "油猴用户脚本", com.xverse.app.R.drawable.ic_brand_userscript),
-    CHROME("CHROME", "Chrome 商店扩展", com.xverse.app.R.drawable.ic_brand_chrome),
-    EDGE("EDGE", "Edge 商店扩展", com.xverse.app.R.drawable.ic_brand_edge),
+    USERSCRIPT("USERSCRIPT", com.xverse.app.R.string.ext_type_userscript, com.xverse.app.R.drawable.ic_brand_userscript),
+    CHROME("CHROME", com.xverse.app.R.string.ext_type_chrome, com.xverse.app.R.drawable.ic_brand_chrome),
+    EDGE("EDGE", com.xverse.app.R.string.ext_type_edge, com.xverse.app.R.drawable.ic_brand_edge),
 }
 
 /** 来源分组分隔行：品牌徽标 + 标签（跳过空分组） */
@@ -189,7 +193,7 @@ private fun SourceHeader(source: ExtensionSource) {
         }
         Spacer(Modifier.width(8.dp))
         Text(
-            text = source.label,
+            text = androidx.compose.ui.res.stringResource(source.labelRes),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary,
         )
@@ -275,14 +279,14 @@ private fun ExtensionCard(ext: ExtensionEntity, viewModel: ExtensionsViewModel) 
                     ) {
                         Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(2.dp))
-                        Text("配置")
+                        Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_action_config))
                     }
                 }
             }
             IconButton(onClick = { showUninstallConfirm = true }) {
                 Icon(
                     Icons.Filled.Delete,
-                    contentDescription = "卸载",
+                    contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_action_uninstall),
                     tint = MaterialTheme.colorScheme.error,
                 )
             }
@@ -290,21 +294,21 @@ private fun ExtensionCard(ext: ExtensionEntity, viewModel: ExtensionsViewModel) 
     }
 
     if (showUninstallConfirm) {
-        AlertDialog(
+        com.xverse.app.ui.common.AppAlertDialog(
             onDismissRequest = { showUninstallConfirm = false },
-            title = { Text("卸载扩展") },
-            text = { Text("确定要卸载「${ext.name}」吗？将删除其数据和文件。") },
+            title = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_dialog_uninstall_title)) },
+            text = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_dialog_uninstall_msg, ext.name)) },
             confirmButton = {
                 TextButton(onClick = {
                     showUninstallConfirm = false
                     viewModel.uninstall(ext)
                 }) {
-                    Text("卸载")
+                    Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_action_uninstall))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showUninstallConfirm = false }) {
-                    Text("取消")
+                    Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_cancel))
                 }
             },
         )
@@ -368,19 +372,25 @@ private fun ImportDialog(
     var mode by remember { mutableStateOf("url") }
     var input by remember { mutableStateOf("") }
 
-    AlertDialog(
+    com.xverse.app.ui.common.AppAlertDialog(
         onDismissRequest = { if (!importing) onDismiss() },
         shape = RoundedCornerShape(16.dp),
-        title = { Text("导入扩展") },
+        title = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_dialog_import_title)) },
         text = {
             Column {
                 // 模式切换
                 Row {
                     TextButton(onClick = { mode = "url" }) {
-                        Text("从链接导入", color = if (mode == "url") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_tab_from_url),
+                            color = if (mode == "url") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                     TextButton(onClick = { mode = "file" }) {
-                        Text("从文件选择", color = if (mode == "file") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_tab_from_file),
+                            color = if (mode == "file") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
                 when (mode) {
@@ -390,21 +400,21 @@ private fun ImportDialog(
                             onValueChange = { input = it },
                             modifier = Modifier.fillMaxWidth(),
                             placeholder = {
-                                Text("商店链接 / 扩展 ID\n/ .crx .zip\n/ .user.js 油猴脚本直链")
+                                Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_placeholder_url))
                             },
                             minLines = 3,
                             maxLines = 3,
                         )
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            text = "支持 Chrome/Edge 商店链接、扩展 ID\n或 .crx/.zip/.user.js 油猴直链",
+                            text = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_hint_url_support),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     "file" -> {
                         Text(
-                            text = "选择本机 .crx / .zip 扩展包或 .user.js 油猴用户脚本",
+                            text = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_hint_file_support),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -424,11 +434,11 @@ private fun ImportDialog(
                 },
                 enabled = !importing,
             ) {
-                Text("导入")
+                Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_btn_import))
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !importing) { Text("取消") }
+            TextButton(onClick = onDismiss, enabled = !importing) { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_cancel)) }
         },
     )
 }
@@ -461,10 +471,10 @@ private fun OptionsOverlay(ext: ExtensionEntity, onClose: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = onClose) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回扩展列表")
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_nav_back))
                 }
                 Text(
-                    text = "${ext.name} · 配置",
+                    text = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_config_title, ext.name),
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.weight(1f),
                 )

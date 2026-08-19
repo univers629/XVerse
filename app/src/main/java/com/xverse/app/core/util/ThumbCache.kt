@@ -51,7 +51,7 @@ object ThumbCache {
                 target.absolutePath
             }
         } catch (e: Exception) {
-            LogStore.log(LogCategory.HISTORY, "缩略图落盘失败: $url（${e.message ?: ""}）")
+            LogStore.log(LogCategory.HISTORY, "Thumbnail save failed: $url (${e.message ?: ""})")
             ""
         }
     }

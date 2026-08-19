@@ -56,8 +56,8 @@ class ExtensionImporter(
         val stream = try {
             context.contentResolver.openInputStream(uri)
         } catch (e: Exception) {
-            throw ImportException("无法读取所选文件")
-        } ?: throw ImportException("无法读取所选文件")
+            throw ImportException("Cannot read selected file")
+        } ?: throw ImportException("Cannot read selected file")
         val name = displayName(uri)
         stream.use {
             if (isUserScriptName(name)) {
@@ -86,13 +86,13 @@ class ExtensionImporter(
         val text = try {
             stream.readBytes().toString(Charsets.UTF_8)
         } catch (e: Exception) {
-            throw ImportException("无法读取油猴用户脚本文件")
+            throw ImportException("Cannot read UserScript file")
         }
-        if (text.length > MAX_USER_SCRIPT_BYTES) throw ImportException("油猴用户脚本过大")
+        if (text.length > MAX_USER_SCRIPT_BYTES) throw ImportException("UserScript file too large")
         val extId = sha256Hex(text.toByteArray()).substring(0, 32)
         val fallbackName = name.substringAfterLast('/').removeSuffix(".user.js").removeSuffix(".js").ifBlank { "未命名脚本" }
         val meta = UserScriptParser.parse(text, fallbackName).getOrElse {
-            throw ImportException("无法解析油猴用户脚本：${it.message}")
+            throw ImportException("Failed to parse UserScript: ${it.message}")
         }
 
         // 存脚本本体
@@ -115,12 +115,12 @@ class ExtensionImporter(
                     val f = File(requireDir, "$idx.js")
                     f.writeBytes(bytes)
                     requireFiles.add("require/$idx.js")
-                    LogStore.log(LogCategory.FILTER, "用户脚本 @require 已下载: ${f.name}（${bytes.size} B）")
+                    LogStore.log(LogCategory.FILTER, "UserScript @require downloaded: ${f.name} (${bytes.size} B)")
                 } else {
-                    LogStore.log(LogCategory.FILTER, "用户脚本 @require 下载失败/跳过: $url")
+                    LogStore.log(LogCategory.FILTER, "UserScript @require failed/skipped: $url")
                 }
             } catch (e: Exception) {
-                LogStore.error("用户脚本 @require 下载失败: $url", e)
+                LogStore.error("UserScript @require download failed: $url", e)
             }
         }
 
@@ -162,7 +162,7 @@ class ExtensionImporter(
                 installedAt = System.currentTimeMillis(),
             )
         )
-        LogStore.log(LogCategory.FILTER, "用户脚本已导入: ${meta.name} v${meta.version} ($extId)")
+        LogStore.log(LogCategory.FILTER, "UserScript imported: ${meta.name} v${meta.version} ($extId)")
         extId
     }
 
@@ -187,7 +187,7 @@ class ExtensionImporter(
             }.getOrNull()
             if (detected == SOURCE_EDGE) {
                 repo.setSource(ext.id, SOURCE_EDGE)
-                LogStore.log(LogCategory.FILTER, "已修正扩展来源为 Edge: ${ext.name}")
+                LogStore.log(LogCategory.FILTER, "Corrected extension source to Edge: ${ext.name}")
             }
         }
     }
@@ -203,7 +203,7 @@ class ExtensionImporter(
      */
     suspend fun importFromUrl(input: String): String = withContext(Dispatchers.IO) {
         val trimmed = input.trim()
-        if (trimmed.isBlank()) throw ImportException("请输入扩展链接或 ID")
+        if (trimmed.isBlank()) throw ImportException("Please enter extension URL or ID")
         when {
             trimmed.startsWith("https://") || trimmed.startsWith("http://") -> {
                 if (isUserScriptName(trimmed.substringBefore('?'))) {
@@ -217,17 +217,17 @@ class ExtensionImporter(
                 } else if (trimmed.contains("microsoftedge.microsoft.com")) {
                     // Edge 商店链接：走 Edge 官方 CDN 端点
                     val id = extractStoreId(trimmed)
-                        ?: throw ImportException("无法从 Edge 链接解析扩展 ID：$trimmed")
+                        ?: throw ImportException("Cannot parse extension ID from Edge URL: $trimmed")
                     fetchFromEdge(id)
                 } else {
                     // 商店链接：提取 ID
                     val id = extractStoreId(trimmed)
-                        ?: throw ImportException("无法从链接解析扩展 ID：$trimmed")
+                        ?: throw ImportException("Cannot parse extension ID from URL: $trimmed")
                     fetchFromUpdate2(id)
                 }
             }
             isExtensionId(trimmed) -> fetchFromUpdate2(trimmed.lowercase(Locale.US))
-            else -> throw ImportException("无法识别的扩展链接或 ID")
+            else -> throw ImportException("Unrecognized extension URL or ID")
         }
     }
 
@@ -260,20 +260,20 @@ class ExtensionImporter(
                 .execute()
                 .use { resp ->
                     if (!resp.isSuccessful) {
-                        LogStore.log(LogCategory.DOWNLOAD, "Edge 拉取失败 HTTP ${resp.code}")
-                        throw ImportException("从 Edge 商店拉取扩展失败（HTTP ${resp.code}），可改用直链导入")
+                        LogStore.log(LogCategory.DOWNLOAD, "Edge fetch failed HTTP ${resp.code}")
+                        throw ImportException("Failed to fetch extension from Edge store (HTTP ${resp.code})")
                     }
                     resp.body.bytes()
                 }
             if (body.size < 64) {
-                throw ImportException("Edge 商店返回空包，可改用直链导入")
+                throw ImportException("Edge store returned empty package")
             }
             body.inputStream().use { importFromStream(it, "$id.crx", source = SOURCE_EDGE) }
         } catch (e: ImportException) {
             throw e
         } catch (e: Exception) {
-            LogStore.error("Edge 拉取异常", e)
-            throw ImportException("从 Edge 商店拉取扩展失败，可改用直链导入")
+            LogStore.error("Edge fetch exception", e)
+            throw ImportException("Failed to fetch extension from Edge store")
         }
     }
 
@@ -290,20 +290,20 @@ class ExtensionImporter(
                 .execute()
                 .use { resp ->
                     if (!resp.isSuccessful) {
-                        LogStore.log(LogCategory.DOWNLOAD, "update2 拉取失败 HTTP ${resp.code}")
-                        throw ImportException("从商店拉取扩展失败（HTTP ${resp.code}），可改用直链导入")
+                        LogStore.log(LogCategory.DOWNLOAD, "update2 fetch failed HTTP ${resp.code}")
+                        throw ImportException("Failed to fetch extension from store (HTTP ${resp.code})")
                     }
                     resp.body.bytes()
                 }
             if (body.size < 64) {
-                throw ImportException("商店返回空包，可改用直链导入")
+                throw ImportException("Store returned empty package")
             }
             body.inputStream().use { importFromStream(it, "$id.crx", source = SOURCE_CHROME) }
         } catch (e: ImportException) {
             throw e
         } catch (e: Exception) {
-            LogStore.error("update2 拉取异常", e)
-            throw ImportException("从商店拉取扩展失败，可改用直链导入")
+            LogStore.error("update2 fetch exception", e)
+            throw ImportException("Failed to fetch extension from store")
         }
     }
 
@@ -313,13 +313,13 @@ class ExtensionImporter(
             client.newCall(Request.Builder().url(url).build())
                 .execute()
                 .use { resp ->
-                    if (!resp.isSuccessful) throw ImportException("下载失败（HTTP ${resp.code}）")
+                    if (!resp.isSuccessful) throw ImportException("Download failed (HTTP ${resp.code})")
                     resp.body.bytes()
                 }
         } catch (e: ImportException) {
             throw e
         } catch (e: Exception) {
-            throw ImportException("下载失败：${e.message}")
+            throw ImportException("Download failed: ${e.message}")
         }
         val name = url.substringAfterLast('/').substringBefore('?').ifBlank { "download.crx" }
         return bytes.inputStream().use { importFromStream(it, name) }
@@ -331,13 +331,13 @@ class ExtensionImporter(
             client.newCall(Request.Builder().url(url).build())
                 .execute()
                 .use { resp ->
-                    if (!resp.isSuccessful) throw ImportException("下载失败（HTTP ${resp.code}）")
+                    if (!resp.isSuccessful) throw ImportException("Download failed (HTTP ${resp.code})")
                     resp.body.bytes()
                 }
         } catch (e: ImportException) {
             throw e
         } catch (e: Exception) {
-            throw ImportException("下载失败：${e.message}")
+            throw ImportException("Download failed: ${e.message}")
         }
         val name = url.substringAfterLast('/').substringBefore('?').ifBlank { "script.user.js" }
         return bytes.inputStream().use { importUserScript(it, name) }
@@ -363,9 +363,9 @@ class ExtensionImporter(
         try {
             unpackZip(ZipInputStream(BufferedInputStream(zipBytes.inputStream())), tmp)
             val manifestFile = File(tmp, "manifest.json")
-            if (!manifestFile.isFile) throw ImportException("扩展包缺少 manifest.json")
+            if (!manifestFile.isFile) throw ImportException("Extension package missing manifest.json")
             val parsed = ManifestParser.parse(manifestFile.readText())
-                .getOrElse { throw ImportException("manifest 解析失败：${it.message}") }
+                .getOrElse { throw ImportException("Failed to parse manifest: ${it.message}") }
             // 消息本地化：__MSG_name__ 等；解析后的消息存盘供 shim 的 i18n.getMessage 使用
             val deviceLang = Locale.getDefault().language
             val manifestJson = JSONObject(manifestFile.readText())
@@ -427,7 +427,7 @@ class ExtensionImporter(
             if (parsed.hasBackground) {
                 LogStore.log(
                     LogCategory.FILTER,
-                    "扩展 $nameLoc v${parsed.version} 含后台脚本 ${parsed.background}（WebView 不支持，仅注入内容脚本）"
+                    "Extension $nameLoc v${parsed.version} has background script ${parsed.background} (unsupported in WebView, injecting content scripts only)"
                 )
             }
 
@@ -445,7 +445,7 @@ class ExtensionImporter(
             if (nativeFilterPack != null &&
                 !ExtensionFilterPackStore.detachBuiltPack(old, integratedFilterPackRoot)
             ) {
-                LogStore.log(LogCategory.FILTER, "规则索引暂未剥离，将在设置页首次读取时重试")
+                LogStore.log(LogCategory.FILTER, "Rule index deferred, will retry on first read in settings")
             }
 
             // 保留原 enabled 状态（重装不重置开关）
@@ -469,15 +469,15 @@ class ExtensionImporter(
                     installedAt = System.currentTimeMillis(),
                 )
             )
-            LogStore.log(LogCategory.FILTER, "扩展已导入: $nameLoc v${parsed.version} ($extId)")
+            LogStore.log(LogCategory.FILTER, "Extension imported: $nameLoc v${parsed.version} ($extId)")
             return extId
         } catch (e: ImportException) {
             tmp.deleteRecursively()
             throw e
         } catch (e: Exception) {
             tmp.deleteRecursively()
-            LogStore.error("扩展解压失败: $name", e)
-            throw ImportException("扩展解压失败：${e.message}")
+            LogStore.error("Failed to unpack extension: $name", e)
+            throw ImportException("Failed to unpack extension: ${e.message}")
         }
     }
 
@@ -487,14 +487,14 @@ class ExtensionImporter(
      * header 之后紧跟 ZIP（定位方式：从偏移 8 起扫描 PK\x03\x04 本地文件头）。
      */
     private fun extractZipBytes(bytes: ByteArray): ByteArray {
-        if (bytes.size < 4) throw ImportException("文件过小，不是有效的扩展包")
+        if (bytes.size < 4) throw ImportException("File too small, invalid extension package")
         val magic = String(bytes, 0, 4, Charsets.US_ASCII)
         if (magic != "Cr24") {
             // 裸 ZIP（PK\x03\x04 开头）或未知格式
             if (bytes.size > 2 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()) {
                 return bytes
             }
-            throw ImportException("不是有效的扩展包（缺少 Cr24/ZIP 头）")
+            throw ImportException("Invalid extension package (missing Cr24/ZIP header)")
         }
         // CRX v2/v3：header_len 在偏移 8 前是 version(4)+header_len(4)
         var offset = 8
@@ -506,7 +506,7 @@ class ExtensionImporter(
             }
             offset++
         }
-        throw ImportException("CRX 内未找到 ZIP 数据")
+        throw ImportException("ZIP data not found inside CRX")
     }
 
     /**
@@ -527,7 +527,7 @@ class ExtensionImporter(
         while (true) {
             val entry = zip.nextEntry ?: break
             count++
-            if (count > MAX_ENTRIES) throw ImportException("包内文件过多，疑似异常")
+            if (count > MAX_ENTRIES) throw ImportException("Too many files in package")
             val rel = safeRel(entry.name)
             if (rel.isEmpty()) { zip.closeEntry(); continue }
             // 跳过用不到的巨型数据：declarativeNetRequest 规则集、_metadata 校验清单
@@ -549,19 +549,19 @@ class ExtensionImporter(
                         val n = zip.read(buffer)
                         if (n < 0) break
                         written += n
-                        if (written > MAX_ENTRY_BYTES) throw ImportException("单个文件过大")
+                        if (written > MAX_ENTRY_BYTES) throw ImportException("Single file exceeds size limit")
                         out.write(buffer, 0, n)
                     }
                 }
                 total += written
-                if (total > MAX_UNPACK_BYTES) throw ImportException("解压体积超限，疑似异常")
+                if (total > MAX_UNPACK_BYTES) throw ImportException("Unpacked size exceeds limit")
             }
             zip.closeEntry()
         }
         if (skipped > 0) {
             LogStore.log(
                 LogCategory.FILTER,
-                "扩展解压跳过声明式规则集/校验数据 ${skipped / 1024} KB（WebView 无需）"
+                "Extension extract skipped declarative rules/validation ${skipped / 1024} KB (not needed for WebView)"
             )
         }
     }

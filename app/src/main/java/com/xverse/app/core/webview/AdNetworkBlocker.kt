@@ -76,9 +76,9 @@ internal object AdNetworkBlocker {
         logged.clear()
         LogStore.log(
             LogCategory.FILTER,
-            "网页广告/跟踪拦截 ${if (enabled) "开启" else "关闭"}" +
+            "Web ad/tracking blocker ${if (enabled) "enabled" else "disabled"}" +
                 if (enabled) {
-                    "（自定义 ${compiled.size}，扩展默认 ${extensionBlockedHosts.size + extensionAllowedHosts.size}，strip=$stripMode）"
+                    " (custom=${compiled.size}, extDefault=${extensionBlockedHosts.size + extensionAllowedHosts.size}, strip=$stripMode)"
                 } else "",
         )
     }
@@ -109,7 +109,7 @@ internal object AdNetworkBlocker {
         val key = "$host$path"
         if (logged.size >= MAX_LOGGED_REQUESTS) logged.clear()
         if (logged.add(key)) {
-            LogStore.log(LogCategory.FILTER, "原生阻断广告/追踪请求：$key")
+            LogStore.log(LogCategory.FILTER, "Native blocked ad/tracking request: $key")
         }
         return WebResourceResponse(
             "text/plain",

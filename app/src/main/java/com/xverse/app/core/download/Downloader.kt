@@ -65,7 +65,7 @@ class Downloader(
      * 始终以 DB 最新状态为基准合并本次变更，避免丢字段。
      */
     suspend fun download(task: DownloadTask, onProgress: suspend (Int) -> Unit): DownloadStatus = withContext(Dispatchers.IO) {
-        LogStore.log(LogCategory.DOWNLOAD, "开始下载: ${task.fileName}")
+        LogStore.log(LogCategory.DOWNLOAD, "Start download: ${task.fileName}")
         val target = resolveTarget(task)
         /** 读取 DB 最新快照，未找到则退回传入值 */
         suspend fun latest(): DownloadTask = repo.findById(task.id) ?: task
@@ -93,7 +93,7 @@ class Downloader(
                             finishedAt = System.currentTimeMillis(),
                             contentUri = resolveContentUri(target, task),
                         ))
-                        LogStore.log(LogCategory.DOWNLOAD, "文件已完整（416），跳过: ${task.fileName}")
+                        LogStore.log(LogCategory.DOWNLOAD, "File already complete (416), skipping: ${task.fileName}")
                         return@withContext DownloadStatus.DONE
                     }
                     repo.update(latest().copy(status = DownloadStatus.FAILED, error = "HTTP ${resp.code}"))
@@ -146,12 +146,12 @@ class Downloader(
                 } catch (e: IOException) {
                     // 网络中断：按失败处理（保留字节供重试）
                     target.abort()
-                    LogStore.log(LogCategory.DOWNLOAD, "下载中断: ${task.fileName}（${e.message}）")
+                    LogStore.log(LogCategory.DOWNLOAD, "Download interrupted: ${task.fileName} (${e.message})")
                     repo.update(latest().copy(
                         downloadedBytes = done,
                         totalBytes = total,
                         status = DownloadStatus.FAILED,
-                        error = "网络中断: ${e.message ?: ""}",
+                        error = "Network interrupted: ${e.message ?: ""}",
                     ))
                     return@withContext DownloadStatus.FAILED
                 } finally {
@@ -169,13 +169,13 @@ class Downloader(
                     finishedAt = System.currentTimeMillis(),
                     contentUri = resolveContentUri(target, task),
                 ))
-                LogStore.log(LogCategory.DOWNLOAD, "下载完成: ${task.fileName}（${finalSize / 1024} KB）")
+                LogStore.log(LogCategory.DOWNLOAD, "Download completed: ${task.fileName} (${finalSize / 1024} KB)")
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            LogStore.error("下载失败: ${task.fileName}", e)
-            repo.update(latest().copy(status = DownloadStatus.FAILED, error = e.message ?: "下载失败"))
+            LogStore.error("Download failed: ${task.fileName}", e)
+            repo.update(latest().copy(status = DownloadStatus.FAILED, error = e.message ?: "Download failed"))
             return@withContext DownloadStatus.FAILED
         }
         DownloadStatus.DONE
@@ -186,7 +186,7 @@ class Downloader(
         return try {
             target.readUri(context)?.toString() ?: ""
         } catch (e: Exception) {
-            LogStore.log(LogCategory.DOWNLOAD, "解析查看 URI 失败: ${task.fileName}（${e.message}）")
+            LogStore.log(LogCategory.DOWNLOAD, "Failed to resolve view URI: ${task.fileName} (${e.message})")
             ""
         }
     }
@@ -245,9 +245,9 @@ class Downloader(
         }
 
         override fun openOutput(append: Boolean): OutputStream {
-            val uri = doc?.uri ?: throw IOException("SAF 目标不可用")
+            val uri = doc?.uri ?: throw IOException("SAF target unavailable")
             return resolver.openOutputStream(uri, if (append) "wa" else "wt")
-                ?: throw IOException("无法打开输出流")
+                ?: throw IOException("Cannot open output stream")
         }
 
         override fun readUri(context: Context): android.net.Uri? = doc?.uri
@@ -308,10 +308,10 @@ class Downloader(
         override fun openOutput(append: Boolean): OutputStream {
             // MediaStore 无法可靠续传：始终从头部新建条目
             val uri = resolver.insert(collectionUri, values)
-                ?: throw IOException("MediaStore 插入失败")
+                ?: throw IOException("MediaStore insert failed")
             insertedUri = uri
             return resolver.openOutputStream(uri, "w")
-                ?: throw IOException("无法打开输出流")
+                ?: throw IOException("Cannot open output stream")
         }
 
         override fun readUri(context: Context): android.net.Uri? = insertedUri

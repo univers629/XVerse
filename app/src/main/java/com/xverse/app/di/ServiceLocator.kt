@@ -111,7 +111,7 @@ class ServiceLocator(private val app: Context) {
                 }
                 builtinRulesReady = true
             } catch (e: Exception) {
-                LogStore.error("初始化内置规则失败", e)
+                LogStore.error("Failed to initialize builtin rules", e)
             }
         }
     }

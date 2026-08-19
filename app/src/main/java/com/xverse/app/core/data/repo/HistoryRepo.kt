@@ -37,7 +37,7 @@ class HistoryRepo(private val dao: HistoryDao) {
         val removedByAge = dao.deleteOlderThan(cutoff)
         val removedByLimit = dao.accountUsernames().sumOf { dao.trimTo(it, maxRecords) }
         if (removedByAge + removedByLimit > 0) {
-            LogStore.log(LogCategory.HISTORY, "历史清理：过期 $removedByAge 条，超上限 $removedByLimit 条")
+            LogStore.log(LogCategory.HISTORY, "History cleanup: expired $removedByAge, limit exceeded $removedByLimit")
         }
     }
 

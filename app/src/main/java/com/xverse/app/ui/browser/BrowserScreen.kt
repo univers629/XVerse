@@ -230,39 +230,39 @@ private fun TopBar(
                 onClick = { viewModel.goBack() },
                 modifier = Modifier.size(48.dp),
             ) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "后退")
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_nav_back))
             }
             IconButton(
                 onClick = { viewModel.goForward() },
                 modifier = Modifier.size(48.dp),
             ) {
-                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "前进")
+                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_nav_forward))
             }
             IconButton(
                 onClick = { viewModel.reload() },
                 modifier = Modifier.size(48.dp),
             ) {
-                Icon(Icons.Filled.Refresh, contentDescription = "刷新")
+                Icon(Icons.Filled.Refresh, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_nav_refresh))
             }
             IconButton(
                 onClick = { viewModel.goHome() },
                 modifier = Modifier.size(48.dp),
             ) {
-                Icon(Icons.Filled.Home, contentDescription = "首页")
+                Icon(Icons.Filled.Home, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_nav_home))
             }
             if (searchExpanded) {
                 FilledTonalIconButton(
                     onClick = onSearchToggle,
                     modifier = Modifier.size(48.dp),
                 ) {
-                    Icon(Icons.Filled.Search, contentDescription = "收起高级搜索")
+                    Icon(Icons.Filled.Search, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_collapse_search))
                 }
             } else {
                 IconButton(
                     onClick = onSearchToggle,
                     modifier = Modifier.size(48.dp),
                 ) {
-                    Icon(Icons.Filled.Search, contentDescription = "展开高级搜索")
+                    Icon(Icons.Filled.Search, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_expand_search))
                 }
             }
             DownloadButton(viewModel)
@@ -334,7 +334,7 @@ private fun DownloadButton(viewModel: BrowserViewModel, modifier: Modifier = Mod
                 expanded = !expanded
             },
         ) {
-            Icon(Icons.Filled.Download, contentDescription = "下载媒体")
+            Icon(Icons.Filled.Download, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_download_media))
         }
         LeftExpandingMenu(
             expanded = expanded,
@@ -358,7 +358,7 @@ private fun DownloadButton(viewModel: BrowserViewModel, modifier: Modifier = Mod
                             onClick = {},
                         )
                         "empty" -> DropdownMenuItem(
-                            text = { Text("未解析到媒体") },
+                            text = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_no_media_found)) },
                             onClick = { expanded = false },
                         )
                         else -> Column {
@@ -404,13 +404,20 @@ private fun LeftExpandingMenu(
     val visibilityState = remember { MutableTransitionState(false) }
     visibilityState.targetState = expanded
 
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val config = androidx.compose.ui.platform.LocalConfiguration.current
+
     if (visibilityState.currentState || visibilityState.targetState) {
         Popup(
             popupPositionProvider = remember { LeftExpandingMenuPositionProvider() },
             onDismissRequest = onDismissRequest,
             properties = PopupProperties(focusable = true),
         ) {
-            AnimatedVisibility(
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.ui.platform.LocalContext provides context,
+                androidx.compose.ui.platform.LocalConfiguration provides config,
+            ) {
+                AnimatedVisibility(
                 visibleState = visibilityState,
                 enter = fadeIn(
                     animationSpec = tween(
@@ -463,15 +470,25 @@ private fun LeftExpandingMenu(
         }
     }
 }
+}
 
 /** 媒体行文案：所有类型均显示序号、清晰度和大小。 */
+@Composable
 private fun mediaLabel(item: com.xverse.app.core.download.MediaItem, idx: Int): String {
     val type = when (item.mediaType) {
-        "photo" -> "图片"
+        "photo" -> androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_photo)
         "gif" -> "GIF"
-        else -> "视频"
+        else -> androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_video)
     }
-    val label = item.quality.ifBlank { if (item.mediaType == "photo") "原图" else "原始" }
+    val defaultQuality = if (item.mediaType == "photo") {
+        androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_original_photo)
+    } else {
+        androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_original_video)
+    }
+    val isOriginal = item.quality.isBlank() || item.quality in setOf(
+        "原图", "原始", "Original Image", "Original", "原寸画像", "元品質", "original", "orig"
+    )
+    val label = if (!isOriginal) item.quality else defaultQuality
     val size = if (item.size > 0) " · ${fmtSize(item.size)}" else ""
     return "$type ${idx + 1} · $label$size"
 }
@@ -498,29 +515,29 @@ private fun LoginChip(viewModel: BrowserViewModel, loggedIn: Boolean, modifier: 
         shape = MaterialTheme.shapes.extraLarge,
     ) {
         Text(
-            text = if (loggedIn) "已登录" else "未登录",
+            text = if (loggedIn) androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_status_logged_in) else androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_status_not_logged_in),
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
     if (showLogoutConfirm) {
-        androidx.compose.material3.AlertDialog(
+        com.xverse.app.ui.common.AppAlertDialog(
             onDismissRequest = { showLogoutConfirm = false },
             shape = RoundedCornerShape(16.dp),
-            title = { Text("登出") },
-            text = { Text("确定要退出登录吗？将清除 x.com 的登录 Cookie。") },
+            title = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_logout_title)) },
+            text = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.browser_logout_confirm)) },
             confirmButton = {
                 TextButton(onClick = {
                     showLogoutConfirm = false
                     viewModel.logout()
                 }) {
-                    Text("登出")
+                    Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_logout))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showLogoutConfirm = false }) {
-                    Text("取消")
+                    Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_cancel))
                 }
             },
         )

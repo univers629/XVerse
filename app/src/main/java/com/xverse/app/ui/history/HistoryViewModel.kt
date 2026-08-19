@@ -95,21 +95,31 @@ class HistoryViewModel(private val locator: ServiceLocator) : ViewModel() {
      */
     private fun buildGroups(records: List<HistoryRecord>): UiState {
         if (records.isEmpty()) return UiState()
+        val context = locator.appContext
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
-        val dateFormatter = DateTimeFormatter.ofPattern("M月d日 EEEE", Locale.getDefault())
+        val lang = com.xverse.app.core.data.repo.SettingsRepo.getSavedAppLanguage(context)
+        val locale = com.xverse.app.core.util.LocaleUtils.getLocale(lang)
+        val patternTodayYesterday = com.xverse.app.core.util.LocaleUtils.getString(context, com.xverse.app.R.string.history_date_format_today_yesterday)
+        val patternOther = com.xverse.app.core.util.LocaleUtils.getString(context, com.xverse.app.R.string.history_date_format_other)
+        val dateFormatter = runCatching { DateTimeFormatter.ofPattern(patternTodayYesterday, locale) }
+            .getOrDefault(DateTimeFormatter.ofLocalizedDate(java.time.format.FormatStyle.MEDIUM))
+        val otherFormatter = runCatching { DateTimeFormatter.ofPattern(patternOther, locale) }
+            .getOrDefault(DateTimeFormatter.ofLocalizedDate(java.time.format.FormatStyle.MEDIUM))
+        val eeeeFormatter = DateTimeFormatter.ofPattern("EEEE", locale)
+
         val groups = records
             .groupBy { Instant.ofEpochMilli(it.visitedAt).atZone(zone).toLocalDate() }
             .map { (date, dailyRecords) ->
                 val prefix = when (date) {
-                    today -> "今天"
-                    today.minusDays(1) -> "昨天"
-                    else -> date.format(DateTimeFormatter.ofPattern("yyyy年M月d日", Locale.getDefault()))
+                    today -> com.xverse.app.core.util.LocaleUtils.getString(context, com.xverse.app.R.string.history_date_today)
+                    today.minusDays(1) -> com.xverse.app.core.util.LocaleUtils.getString(context, com.xverse.app.R.string.history_date_yesterday)
+                    else -> date.format(otherFormatter)
                 }
                 val label = if (date == today || date == today.minusDays(1)) {
                     "$prefix · ${date.format(dateFormatter)}"
                 } else {
-                    "$prefix · ${date.format(DateTimeFormatter.ofPattern("EEEE", Locale.getDefault()))}"
+                    "$prefix · ${date.format(eeeeFormatter)}"
                 }
                 label to dailyRecords
             }
@@ -145,7 +155,7 @@ class HistoryViewModel(private val locator: ServiceLocator) : ViewModel() {
                 if (record.textPreview.isNotBlank()) record.textPreview else record.url,
             )
         }
-        val chooser = android.content.Intent.createChooser(send, "分享推文")
+        val chooser = android.content.Intent.createChooser(send, com.xverse.app.core.util.LocaleUtils.getString(context, com.xverse.app.R.string.history_share_tweet_chooser))
         chooser.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
         runCatching { context.startActivity(chooser) }
     }

@@ -68,9 +68,9 @@ internal fun MonetColorSettings(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                Text("自定义主题色", style = MaterialTheme.typography.titleSmall)
+                Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.monet_custom_theme_color), style = MaterialTheme.typography.titleSmall)
                 Text(
-                    "使用自选颜色生成莫奈配色，替代系统壁纸取色",
+                    androidx.compose.ui.res.stringResource(com.xverse.app.R.string.monet_custom_theme_desc),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -87,7 +87,7 @@ internal fun MonetColorSettings(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("选择主题色", style = MaterialTheme.typography.titleSmall)
+                Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.monet_select_theme_color), style = MaterialTheme.typography.titleSmall)
                 Text(
                     colorArgb.toHexColor(),
                     style = MaterialTheme.typography.bodySmall,
@@ -121,7 +121,7 @@ private fun ColorSwatch(color: Color) {
         shadowElevation = 2.dp,
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Icon(Icons.Filled.ColorLens, contentDescription = "当前主题色", modifier = Modifier.size(22.dp))
+            Icon(Icons.Filled.ColorLens, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.monet_current_theme_color), modifier = Modifier.size(22.dp))
         }
     }
 }
@@ -164,10 +164,10 @@ private fun MonetColorPickerDialog(
         ).toHexDigits()
     }
 
-    AlertDialog(
+    com.xverse.app.ui.common.AppAlertDialog(
         onDismissRequest = onDismiss,
         shape = RoundedCornerShape(16.dp),
-        title = { Text("选择主题色") },
+        title = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.monet_select_theme_color)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 SelectedColorHeader(
@@ -209,10 +209,10 @@ private fun MonetColorPickerDialog(
             Button(
                 onClick = { onConfirm(selectedColor) },
                 enabled = hexValue.length == 6,
-            ) { Text("应用") }
+            ) { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_apply)) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_cancel)) }
         },
     )
 }
@@ -257,12 +257,12 @@ private fun PickerModeTabs(mode: PickerMode, onModeChange: (PickerMode) -> Unit)
     ) {
         Row(modifier = Modifier.padding(3.dp)) {
             PickerModeTab(
-                label = "色板",
+                label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.monet_tab_palette),
                 selected = mode == PickerMode.PALETTE,
                 onClick = { onModeChange(PickerMode.PALETTE) },
             )
             PickerModeTab(
-                label = "调色",
+                label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.monet_tab_mixer),
                 selected = mode == PickerMode.MIXER,
                 onClick = { onModeChange(PickerMode.MIXER) },
             )
@@ -348,7 +348,7 @@ private fun ContinuousColorPalette(selectedColor: Int, onColorSelected: (Int) ->
             }
         }
         GradientSliderRow(
-            label = "色相",
+            label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.monet_slider_hue),
             valueLabel = "${hsv[0].toInt()}°",
             value = hsv[0] / 360f,
             colors = HUE_COLORS,
@@ -378,7 +378,7 @@ private fun HslSliders(
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         GradientSliderRow(
-            label = "色相",
+            label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.monet_slider_hue),
             valueLabel = "${hue.toInt()}°",
             value = hue / 360f,
             colors = HUE_COLORS,
@@ -386,7 +386,7 @@ private fun HslSliders(
             onValueChange = { onHueChange(it * 360f) },
         )
         GradientSliderRow(
-            label = "饱和度",
+            label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.monet_slider_saturation),
             valueLabel = "${(saturation * 100).toInt()}%",
             value = saturation,
             colors = listOf(saturationStart, saturationEnd),
@@ -394,7 +394,7 @@ private fun HslSliders(
             onValueChange = onSaturationChange,
         )
         GradientSliderRow(
-            label = "亮度",
+            label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.monet_slider_lightness),
             valueLabel = "${(lightness * 100).toInt()}%",
             value = lightness,
             colors = listOf(Color.Black, lightnessMiddle, Color.White),

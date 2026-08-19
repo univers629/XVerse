@@ -58,12 +58,14 @@ fun LogsScreen(
         Button(
             onClick = {
                 val path = LogStore.exportToFile()
-                Toast.makeText(context, path?.let { "已导出到 $it" } ?: "导出失败", Toast.LENGTH_SHORT).show()
+                val msg = path?.let { com.xverse.app.core.util.LocaleUtils.getString(context, com.xverse.app.R.string.logs_toast_exported, it) }
+                    ?: com.xverse.app.core.util.LocaleUtils.getString(context, com.xverse.app.R.string.logs_toast_export_failed)
+                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
             },
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
             shape = MaterialTheme.shapes.extraLarge,
         ) {
-            Text("导出日志")
+            Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.logs_btn_export))
         }
 
         HorizontalDivider(modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
@@ -71,8 +73,8 @@ fun LogsScreen(
         if (logs.isEmpty()) {
             ExpressiveEmptyState(
                 icon = Icons.AutoMirrored.Filled.Article,
-                title = "暂无日志",
-                description = "运行日志会按分类显示在这里。",
+                title = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.logs_empty_title),
+                description = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.logs_empty_desc),
                 modifier = Modifier.fillMaxSize(),
             )
             return
@@ -90,8 +92,11 @@ fun LogsScreen(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LogCategoryDropdown(filter: LogCategory?, onSelect: (LogCategory?) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val config = androidx.compose.ui.platform.LocalConfiguration.current
     var expanded by remember { mutableStateOf(false) }
-    val value = filter?.label ?: "全部"
+    val allLabel = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.logs_cat_all)
+    val value = filter?.let { androidx.compose.ui.res.stringResource(it.labelRes) } ?: allLabel
     Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
         ExposedDropdownMenuBox(
             expanded = expanded,
@@ -102,7 +107,7 @@ private fun LogCategoryDropdown(filter: LogCategory?, onSelect: (LogCategory?) -
                 onValueChange = {},
                 readOnly = true,
                 singleLine = true,
-                label = { Text("分类筛选") },
+                label = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.logs_filter_label)) },
                 textStyle = MaterialTheme.typography.titleSmall,
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                 modifier = Modifier
@@ -114,16 +119,21 @@ private fun LogCategoryDropdown(filter: LogCategory?, onSelect: (LogCategory?) -
                 expanded = expanded,
                 onDismissRequest = { expanded = false },
             ) {
-                SmoothDropdownContent(expanded = expanded) {
-                    DropdownMenuItem(
-                        text = { Text("全部", style = MaterialTheme.typography.titleSmall) },
-                        onClick = { expanded = false; onSelect(null) },
-                    )
-                    LogCategory.entries.forEach { category ->
+                androidx.compose.runtime.CompositionLocalProvider(
+                    androidx.compose.ui.platform.LocalContext provides context,
+                    androidx.compose.ui.platform.LocalConfiguration provides config,
+                ) {
+                    SmoothDropdownContent(expanded = expanded) {
                         DropdownMenuItem(
-                            text = { Text(category.label, style = MaterialTheme.typography.titleSmall) },
-                            onClick = { expanded = false; onSelect(category) },
+                            text = { Text(allLabel, style = MaterialTheme.typography.titleSmall) },
+                            onClick = { expanded = false; onSelect(null) },
                         )
+                        LogCategory.entries.forEach { category ->
+                            DropdownMenuItem(
+                                text = { Text(androidx.compose.ui.res.stringResource(category.labelRes), style = MaterialTheme.typography.titleSmall) },
+                                onClick = { expanded = false; onSelect(category) },
+                            )
+                        }
                     }
                 }
             }
@@ -140,6 +150,19 @@ private fun LogRow(category: LogCategory, message: String) {
         LogCategory.WEBVIEW -> MaterialTheme.colorScheme.secondary
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lang = remember(context) {
+        com.xverse.app.core.data.repo.SettingsRepo.getSavedAppLanguage(context).let {
+            if (it == "system") {
+                com.xverse.app.core.util.LocaleUtils.getSystemLocale().language
+            } else {
+                it
+            }
+        }
+    }
+    val displayMessage = remember(message, lang) {
+        com.xverse.app.core.log.LogLocalizer.localize(message, lang)
+    }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -148,14 +171,15 @@ private fun LogRow(category: LogCategory, message: String) {
         shape = RoundedCornerShape(12.dp),
     ) {
         Row(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            val catLabel = androidx.compose.ui.res.stringResource(category.labelRes)
             Text(
-                text = "[${category.label}]",
+                text = "[$catLabel]",
                 style = MaterialTheme.typography.labelSmall,
                 color = color,
             )
             Spacer(Modifier.width(8.dp))
             Text(
-                text = message,
+                text = displayMessage,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f),

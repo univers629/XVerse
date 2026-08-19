@@ -141,8 +141,8 @@ internal fun XSearchPanel(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 8.dp),
-                        label = { Text("搜索内容") },
-                        placeholder = { Text("关键词或已有搜索语句") },
+                        label = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_content)) },
+                        placeholder = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_placeholder_content)) },
                         leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                         singleLine = true,
                         shape = MaterialTheme.shapes.large,
@@ -197,16 +197,16 @@ internal fun XSearchPanel(
     }
 
     if (showFavoriteDialog) {
-        AlertDialog(
+        com.xverse.app.ui.common.AppAlertDialog(
             onDismissRequest = { showFavoriteDialog = false },
             shape = MaterialTheme.shapes.extraLarge,
             icon = { Icon(Icons.Filled.Star, contentDescription = null) },
-            title = { Text("收藏搜索") },
+            title = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_fav_title)) },
             text = {
                 OutlinedTextField(
                     value = favoriteName,
                     onValueChange = { favoriteName = it },
-                    label = { Text("名称") },
+                    label = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_fav_name_label)) },
                     singleLine = true,
                     shape = MaterialTheme.shapes.medium,
                 )
@@ -216,11 +216,11 @@ internal fun XSearchPanel(
                     onSaveFavorite(favoriteName, built.query)
                     showFavoriteDialog = false
                 }) {
-                    Text("保存")
+                    Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_save))
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showFavoriteDialog = false }) { Text("取消") }
+                TextButton(onClick = { showFavoriteDialog = false }) { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_cancel)) }
             },
         )
     }
@@ -241,15 +241,15 @@ private fun SearchPanelHeader(
         Column {
             Text(
                 text = when (page) {
-                    SearchPanelPage.FILTERS -> "高级搜索"
-                    SearchPanelPage.HISTORY -> "搜索历史"
-                    SearchPanelPage.FAVORITES -> "收藏的搜索"
+                    SearchPanelPage.FILTERS -> androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_tab_advanced)
+                    SearchPanelPage.HISTORY -> androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_tab_history)
+                    SearchPanelPage.FAVORITES -> androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_tab_favorites)
                 },
                 style = MaterialTheme.typography.titleLarge,
             )
             if (page == SearchPanelPage.FILTERS) {
                 Text(
-                    "组合 X 搜索操作符",
+                    androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_subtitle_combine),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -261,17 +261,17 @@ private fun SearchPanelHeader(
             onClick = {
                 onPageChange(if (page == SearchPanelPage.HISTORY) SearchPanelPage.FILTERS else SearchPanelPage.HISTORY)
             },
-            icon = { Icon(Icons.Filled.History, contentDescription = "搜索历史") },
+            icon = { Icon(Icons.Filled.History, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_icon_history)) },
         )
         ExpressivePanelIcon(
             selected = page == SearchPanelPage.FAVORITES,
             onClick = {
                 onPageChange(if (page == SearchPanelPage.FAVORITES) SearchPanelPage.FILTERS else SearchPanelPage.FAVORITES)
             },
-            icon = { Icon(Icons.Filled.Star, contentDescription = "收藏的搜索") },
+            icon = { Icon(Icons.Filled.Star, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_icon_favorites)) },
         )
         IconButton(onClick = onClose) {
-            Icon(Icons.Filled.Close, contentDescription = "收起搜索面板")
+            Icon(Icons.Filled.Close, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_icon_close))
         }
     }
 }
@@ -289,10 +289,10 @@ private fun ExpressivePanelIcon(
 @Composable
 private fun SearchCategoryTabs(selected: SearchCategory, onSelected: (SearchCategory) -> Unit) {
     val categories = listOf(
-        Triple(SearchCategory.QUERY, "搜索", Icons.Filled.Search),
-        Triple(SearchCategory.SOURCE, "来源", Icons.Filled.Person),
-        Triple(SearchCategory.FILTERS, "筛选", Icons.Filled.Tune),
-        Triple(SearchCategory.TYPE, "类型", Icons.Filled.GridView),
+        Triple(SearchCategory.QUERY, androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_cat_query), Icons.Filled.Search),
+        Triple(SearchCategory.SOURCE, androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_cat_source), Icons.Filled.Person),
+        Triple(SearchCategory.FILTERS, androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_cat_filters), Icons.Filled.Tune),
+        Triple(SearchCategory.TYPE, androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_cat_type), Icons.Filled.GridView),
     )
     PrimaryTabRow(
         selectedTabIndex = categories.indexOfFirst { it.first == selected },
@@ -328,25 +328,37 @@ private fun SearchFields(
     ) {
         when (category) {
             SearchCategory.QUERY -> {
-                SearchTextField(state.exactPhrase, "精确短语", "例如：this is the * time") {
+                SearchTextField(
+                    state.exactPhrase,
+                    androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_exact),
+                    androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_hint_exact),
+                ) {
                     onStateChange(state.copy(exactPhrase = it))
                 }
-                SearchTextField(state.orTerms, "OR（任一）", "逗号分隔，例如 apple, banana") {
+                SearchTextField(
+                    state.orTerms,
+                    androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_or),
+                    androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_hint_or),
+                ) {
                     onStateChange(state.copy(orTerms = it))
                 }
-                SearchTextField(state.exclude, "排除词", "逗号分隔；短语会自动加引号") {
+                SearchTextField(
+                    state.exclude,
+                    androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_exclude),
+                    androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_hint_exclude),
+                ) {
                     onStateChange(state.copy(exclude = it))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     SearchTextField(
                         value = state.hashtag,
-                        label = "话题标签",
+                        label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_hashtag),
                         placeholder = "#AI",
                         modifier = Modifier.weight(1f),
                     ) { onStateChange(state.copy(hashtag = it)) }
                     SearchTextField(
                         value = state.url,
-                        label = "链接域名",
+                        label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_domain),
                         placeholder = "youtube.com",
                         modifier = Modifier.weight(1f),
                         leadingIcon = { Icon(Icons.Filled.Link, contentDescription = null) },
@@ -359,15 +371,15 @@ private fun SearchFields(
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     SearchTextField(
                         state.from,
-                        "来自用户",
-                        "用户名",
+                        androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_from_user),
+                        androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_username),
                         Modifier.weight(1f),
                         leadingIcon = { Icon(Icons.Filled.Person, contentDescription = null) },
                     ) { onStateChange(state.copy(from = it)) }
                     SearchTextField(
                         state.to,
-                        "回复给",
-                        "用户名",
+                        androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_to_user),
+                        androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_username),
                         Modifier.weight(1f),
                         leadingIcon = { Icon(Icons.Filled.People, contentDescription = null) },
                     ) { onStateChange(state.copy(to = it)) }
@@ -375,14 +387,14 @@ private fun SearchFields(
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                     SearchTextField(
                         state.near,
-                        "地点",
-                        "城市或地名",
+                        androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_place),
+                        androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_hint_place),
                         Modifier.weight(1.35f),
                         leadingIcon = { Icon(Icons.Filled.LocationOn, contentDescription = null) },
                     ) { onStateChange(state.copy(near = it)) }
                     SearchTextField(
                         state.withinValue,
-                        "半径",
+                        androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_radius),
                         "10",
                         Modifier.weight(0.65f),
                         keyboardType = KeyboardType.Number,
@@ -396,37 +408,42 @@ private fun SearchFields(
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     SearchToggleChip(
                         selected = state.verifiedOnly,
-                        label = "仅认证账号",
+                        label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_toggle_verified_only),
                         icon = { Icon(Icons.Filled.Verified, contentDescription = null) },
                     ) { onStateChange(state.copy(verifiedOnly = !state.verifiedOnly)) }
                     SearchToggleChip(
                         selected = state.followingOnly,
-                        label = "仅关注的人",
+                        label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_toggle_following_only),
                         icon = { Icon(Icons.Filled.People, contentDescription = null) },
                     ) { onStateChange(state.copy(followingOnly = !state.followingOnly)) }
                 }
             }
 
             SearchCategory.FILTERS -> {
-                Text("最近一段时间", style = MaterialTheme.typography.labelLarge)
+                Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_sec_recent_time), style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                     SearchTextField(
                         state.withinTimeValue,
-                        "数值",
-                        "例如 2",
+                        androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_recent_value),
+                        androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_hint_recent_value),
                         Modifier.weight(1f),
                         keyboardType = KeyboardType.Number,
                     ) { onStateChange(state.copy(withinTimeValue = it)) }
                     CompactSelector(
                         value = state.withinTimeUnit,
-                        options = listOf("d" to "天", "h" to "小时", "m" to "分钟", "s" to "秒"),
+                        options = listOf(
+                            "d" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_unit_day),
+                            "h" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_unit_hour),
+                            "m" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_unit_minute),
+                            "s" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_unit_second),
+                        ),
                         onSelected = { onStateChange(state.copy(withinTimeUnit = it)) },
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     SearchTextField(
                         state.since,
-                        "起始日期",
+                        androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_start_date),
                         "YYYY-MM-DD",
                         Modifier.weight(1f),
                         keyboardType = KeyboardType.Number,
@@ -434,23 +451,23 @@ private fun SearchFields(
                     ) { onStateChange(state.copy(since = it)) }
                     SearchTextField(
                         state.until,
-                        "截止日期",
+                        androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_end_date),
                         "YYYY-MM-DD",
                         Modifier.weight(1f),
                         keyboardType = KeyboardType.Number,
                         leadingIcon = { Icon(Icons.Filled.CalendarMonth, contentDescription = null) },
                     ) { onStateChange(state.copy(until = it)) }
                 }
-                Text("最低互动量", style = MaterialTheme.typography.labelLarge)
+                Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_sec_min_engagement), style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     SearchTextField(
-                        state.minFaves, "点赞", "0", Modifier.weight(1f), keyboardType = KeyboardType.Number
+                        state.minFaves, androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_faves), "0", Modifier.weight(1f), keyboardType = KeyboardType.Number
                     ) { onStateChange(state.copy(minFaves = it)) }
                     SearchTextField(
-                        state.minRetweets, "转发", "0", Modifier.weight(1f), keyboardType = KeyboardType.Number
+                        state.minRetweets, androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_retweets), "0", Modifier.weight(1f), keyboardType = KeyboardType.Number
                     ) { onStateChange(state.copy(minRetweets = it)) }
                     SearchTextField(
-                        state.minReplies, "回复", "0", Modifier.weight(1f), keyboardType = KeyboardType.Number
+                        state.minReplies, androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_replies), "0", Modifier.weight(1f), keyboardType = KeyboardType.Number
                     ) { onStateChange(state.copy(minReplies = it)) }
                 }
             }
@@ -460,22 +477,22 @@ private fun SearchFields(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    SearchToggleChip(state.filterMedia, "任何媒体", { Icon(Icons.Filled.FilterAlt, null) }) {
+                    SearchToggleChip(state.filterMedia, androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_chip_any_media), { Icon(Icons.Filled.FilterAlt, null) }) {
                         onStateChange(state.copy(filterMedia = !state.filterMedia))
                     }
-                    SearchToggleChip(state.filterImages, "图片", { Icon(Icons.Filled.Image, null) }) {
+                    SearchToggleChip(state.filterImages, androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_chip_images), { Icon(Icons.Filled.Image, null) }) {
                         onStateChange(state.copy(filterImages = !state.filterImages))
                     }
-                    SearchToggleChip(state.filterVideos, "视频", { Icon(Icons.Filled.Movie, null) }) {
+                    SearchToggleChip(state.filterVideos, androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_chip_videos), { Icon(Icons.Filled.Movie, null) }) {
                         onStateChange(state.copy(filterVideos = !state.filterVideos))
                     }
-                    SearchToggleChip(state.filterLinks, "链接", { Icon(Icons.Filled.Link, null) }) {
+                    SearchToggleChip(state.filterLinks, androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_chip_links), { Icon(Icons.Filled.Link, null) }) {
                         onStateChange(state.copy(filterLinks = !state.filterLinks))
                     }
-                    SearchToggleChip(state.filterQuote, "引用推文", { Icon(Icons.Filled.People, null) }) {
+                    SearchToggleChip(state.filterQuote, androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_chip_quotes), { Icon(Icons.Filled.People, null) }) {
                         onStateChange(state.copy(filterQuote = !state.filterQuote))
                     }
-                    SearchToggleChip(state.excludeReplies, "排除回复", { Icon(Icons.Filled.FilterAlt, null) }) {
+                    SearchToggleChip(state.excludeReplies, androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_chip_exclude_replies), { Icon(Icons.Filled.FilterAlt, null) }) {
                         onStateChange(state.copy(excludeReplies = !state.excludeReplies))
                     }
                 }
@@ -532,34 +549,51 @@ private fun SearchToggleChip(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LanguageSelector(value: String, onSelected: (String) -> Unit) {
+    val anyLang = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_lang_any)
     val options = listOf(
-        "" to "任意语言", "en" to "英语", "zh" to "中文", "ja" to "日语",
-        "ko" to "韩语", "es" to "西班牙语", "fr" to "法语", "de" to "德语",
-        "ru" to "俄语", "pt" to "葡萄牙语", "ar" to "阿拉伯语", "hi" to "印地语",
+        "" to anyLang,
+        "en" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.lang_en),
+        "zh" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.lang_zh),
+        "ja" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.lang_ja),
+        "ko" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.lang_ko),
+        "es" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.lang_es),
+        "fr" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.lang_fr),
+        "de" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.lang_de),
+        "ru" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.lang_ru),
+        "pt" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.lang_pt),
+        "ar" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.lang_ar),
+        "hi" to androidx.compose.ui.res.stringResource(com.xverse.app.R.string.lang_hi),
     )
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val config = androidx.compose.ui.platform.LocalConfiguration.current
     var expanded by remember { mutableStateOf(false) }
     ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
         OutlinedTextField(
-            value = options.firstOrNull { it.first == value }?.second ?: "任意语言",
+            value = options.firstOrNull { it.first == value }?.second ?: anyLang,
             onValueChange = {},
             modifier = Modifier
                 .fillMaxWidth()
                 .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable),
             readOnly = true,
-            label = { Text("语言") },
+            label = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_field_language)) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
             shape = MaterialTheme.shapes.medium,
         )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            SmoothDropdownContent(expanded = expanded) {
-                options.forEach { (code, label) ->
-                    DropdownMenuItem(
-                        text = { Text(label) },
-                        onClick = {
-                            onSelected(code)
-                            expanded = false
-                        },
-                    )
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.ui.platform.LocalContext provides context,
+                androidx.compose.ui.platform.LocalConfiguration provides config,
+            ) {
+                SmoothDropdownContent(expanded = expanded) {
+                    options.forEach { (code, label) ->
+                        DropdownMenuItem(
+                            text = { Text(label) },
+                            onClick = {
+                                onSelected(code)
+                                expanded = false
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -573,6 +607,8 @@ private fun CompactSelector(
     options: List<Pair<String, String>>,
     onSelected: (String) -> Unit,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val config = androidx.compose.ui.platform.LocalConfiguration.current
     var expanded by remember { mutableStateOf(false) }
     ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
         OutlinedTextField(
@@ -586,15 +622,20 @@ private fun CompactSelector(
             shape = MaterialTheme.shapes.medium,
         )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            SmoothDropdownContent(expanded = expanded) {
-                options.forEach { (key, label) ->
-                    DropdownMenuItem(
-                        text = { Text(label) },
-                        onClick = {
-                            onSelected(key)
-                            expanded = false
-                        },
-                    )
+            androidx.compose.runtime.CompositionLocalProvider(
+                androidx.compose.ui.platform.LocalContext provides context,
+                androidx.compose.ui.platform.LocalConfiguration provides config,
+            ) {
+                SmoothDropdownContent(expanded = expanded) {
+                    options.forEach { (key, label) ->
+                        DropdownMenuItem(
+                            text = { Text(label) },
+                            onClick = {
+                                onSelected(key)
+                                expanded = false
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -616,7 +657,7 @@ private fun SearchPanelFooter(
     ) {
         if (hasTimeConflict) {
             Text(
-                "“最近”会覆盖起始和截止日期",
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_tip_recent_override),
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.labelMedium,
             )
@@ -626,7 +667,7 @@ private fun SearchPanelFooter(
             shape = MaterialTheme.shapes.medium,
         ) {
             Text(
-                text = query.ifBlank { "搜索语句将在这里预览" },
+                text = query.ifBlank { androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_preview_placeholder) },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -638,15 +679,15 @@ private fun SearchPanelFooter(
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = onReset) {
                 Icon(Icons.Filled.RestartAlt, contentDescription = null)
-                Text("重置", modifier = Modifier.padding(start = 6.dp))
+                Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_reset), modifier = Modifier.padding(start = 6.dp))
             }
             IconButton(onClick = onFavorite, enabled = query.isNotBlank()) {
-                Icon(Icons.Outlined.StarOutline, contentDescription = "收藏当前搜索")
+                Icon(Icons.Outlined.StarOutline, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_icon_fav_current))
             }
             Spacer(Modifier.weight(1f))
             Button(onClick = onSearch, enabled = query.isNotBlank(), shape = MaterialTheme.shapes.extraLarge) {
                 Icon(Icons.Filled.Search, contentDescription = null)
-                Text("搜索", modifier = Modifier.padding(start = 8.dp))
+                Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_search), modifier = Modifier.padding(start = 8.dp))
             }
         }
     }
@@ -668,12 +709,12 @@ private fun SearchHistoryView(
             ) {
                 TextButton(onClick = onClear) {
                     Icon(Icons.Filled.DeleteOutline, contentDescription = null)
-                    Text("清空", modifier = Modifier.padding(start = 6.dp))
+                    Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_clear), modifier = Modifier.padding(start = 6.dp))
                 }
             }
         }
         if (history.isEmpty()) {
-            EmptySearchList("还没有搜索历史", Modifier.weight(1f))
+            EmptySearchList(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_empty_history), Modifier.weight(1f))
         } else {
             LazyColumn(
                 modifier = Modifier.weight(1f),
@@ -702,7 +743,7 @@ private fun SearchFavoritesView(
     modifier: Modifier = Modifier,
 ) {
     if (favorites.isEmpty()) {
-        EmptySearchList("还没有收藏的搜索", modifier)
+        EmptySearchList(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_empty_favorites), modifier)
     } else {
         LazyColumn(
             modifier = modifier.fillMaxWidth(),
@@ -751,10 +792,10 @@ private fun SearchListItem(
                     )
                 }
             }
-            TextButton(onClick = onUse) { Text("使用") }
-            IconButton(onClick = onSearch) { Icon(Icons.Filled.Search, contentDescription = "立即搜索") }
+            TextButton(onClick = onUse) { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_use)) }
+            IconButton(onClick = onSearch) { Icon(Icons.Filled.Search, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_icon_search_now)) }
             if (onRemove != null) {
-                IconButton(onClick = onRemove) { Icon(Icons.Filled.DeleteOutline, contentDescription = "移除") }
+                IconButton(onClick = onRemove) { Icon(Icons.Filled.DeleteOutline, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.search_icon_remove)) }
             }
         }
     }

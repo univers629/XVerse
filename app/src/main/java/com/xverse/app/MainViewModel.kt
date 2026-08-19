@@ -19,8 +19,9 @@ import kotlinx.coroutines.launch
  */
 class MainViewModel(locator: ServiceLocator) : ViewModel() {
 
-    // ---- 主题 ----
+    // ---- 主题与语言 ----
     val themeMode = locator.settings.themeMode
+    val appLanguage = locator.settings.appLanguage
     val customMonetEnabled = locator.settings.customMonetEnabled
     val customMonetColor = locator.settings.customMonetColor
 

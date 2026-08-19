@@ -1222,7 +1222,7 @@ class ExtensionRuntime(
             val requestHost = runCatching { request.url.host }.getOrDefault("unknown")
             userScriptHttpClient.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: java.io.IOException) {
-                    LogStore.log(LogCategory.FILTER, "用户脚本网络失败: $method $requestHost (${e.message})")
+                    LogStore.log(LogCategory.FILTER, "UserScript network error: $method $requestHost (${e.message})")
                     reply(JSONObject().put("ok", false).put("error", e.message ?: "network error"))
                 }
 
@@ -1252,7 +1252,7 @@ class ExtensionRuntime(
             val url = payload.optString("url")
             val fileName = payload.optString("fileName")
             if (url.isBlank() || fileName.isBlank()) {
-                LogStore.log(LogCategory.FILTER, "extDownloadUrl 参数缺失: url=$url name=$fileName")
+                LogStore.log(LogCategory.FILTER, "extDownloadUrl missing params: url=$url name=$fileName")
                 reply(JSONObject().put("ok", false).put("error", "missing url/name")); return@register
             }
             val media = extensionMediaItem(url, fileName)
@@ -1363,9 +1363,9 @@ class ExtensionRuntime(
     private fun saveStorage(extId: String, data: JSONObject) {
         try {
             storageFile(extId).writeText(data.toString())
-            LogStore.log(LogCategory.FILTER, "扩展存储已写: $extId")
+            LogStore.log(LogCategory.FILTER, "Extension storage written: $extId")
         } catch (e: Exception) {
-            LogStore.error("扩展存储写失败", e)
+            LogStore.error("Failed to write extension storage", e)
         }
     }
 
@@ -1374,9 +1374,9 @@ class ExtensionRuntime(
         try {
             val d = extDir(extId)
             if (d.isDirectory) d.deleteRecursively()
-            LogStore.log(LogCategory.FILTER, "扩展数据已清除: $extId")
+            LogStore.log(LogCategory.FILTER, "Extension data cleared: $extId")
         } catch (e: Exception) {
-            LogStore.error("扩展数据清除失败", e)
+            LogStore.error("Failed to clear extension data", e)
         }
     }
 

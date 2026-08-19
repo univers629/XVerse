@@ -20,6 +20,9 @@ fun SmoothDropdownContent(
     expanded: Boolean,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val config = androidx.compose.ui.platform.LocalConfiguration.current
+
     AnimatedVisibility(
         visible = expanded,
         enter = fadeIn(
@@ -47,6 +50,11 @@ fun SmoothDropdownContent(
             targetHeight = { fullHeight -> (fullHeight * 0.9f).roundToInt() },
         ),
     ) {
-        Column(content = content)
+        androidx.compose.runtime.CompositionLocalProvider(
+            androidx.compose.ui.platform.LocalContext provides context,
+            androidx.compose.ui.platform.LocalConfiguration provides config,
+        ) {
+            Column(content = content)
+        }
     }
 }

@@ -76,8 +76,12 @@ fun DownloadScreen(
 
     Column(modifier = modifier.fillMaxSize()) {
         ExpressivePageTitle(
-            title = "下载中心",
-            subtitle = if (tasks.isEmpty()) "媒体下载会显示在这里" else "${tasks.size} 个下载任务",
+            title = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_title),
+            subtitle = if (tasks.isEmpty()) {
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_subtitle_empty)
+            } else {
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_subtitle_count, tasks.size)
+            },
         )
 
         OutlinedTextField(
@@ -86,13 +90,13 @@ fun DownloadScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp, vertical = 4.dp),
-            placeholder = { Text("搜索下载…") },
+            placeholder = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_search_placeholder)) },
             singleLine = true,
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
             trailingIcon = if (query.isNotEmpty()) {
                 {
                     IconButton(onClick = { viewModel.setQuery("") }) {
-                        Icon(Icons.Filled.Close, contentDescription = "清空搜索")
+                        Icon(Icons.Filled.Close, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_clear))
                     }
                 }
             } else null,
@@ -106,7 +110,7 @@ fun DownloadScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             DownloadFilterChip(
-                label = "图片",
+                label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_filter_image),
                 selected = DownloadMediaType.IMAGE in selectedTypes,
                 onClick = { viewModel.toggleMediaType(DownloadMediaType.IMAGE) },
                 modifier = Modifier.weight(1f),
@@ -118,7 +122,7 @@ fun DownloadScreen(
                 modifier = Modifier.weight(1f),
             )
             DownloadFilterChip(
-                label = "视频",
+                label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_filter_video),
                 selected = DownloadMediaType.VIDEO in selectedTypes,
                 onClick = { viewModel.toggleMediaType(DownloadMediaType.VIDEO) },
                 modifier = Modifier.weight(1f),
@@ -128,8 +132,8 @@ fun DownloadScreen(
         if (tasks.isEmpty()) {
             ExpressiveEmptyState(
                 icon = Icons.Filled.Download,
-                title = "暂无下载任务",
-                description = "在首页打开推文后，可从工具栏选择媒体下载。",
+                title = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_empty_title),
+                description = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_empty_desc),
                 modifier = Modifier.weight(1f).fillMaxWidth(),
             )
             return@Column
@@ -138,8 +142,8 @@ fun DownloadScreen(
         if (filteredTasks.isEmpty()) {
             ExpressiveEmptyState(
                 icon = Icons.Filled.Search,
-                title = "没有符合条件的下载",
-                description = "请调整搜索内容或媒体类型筛选。",
+                title = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_empty_search_title),
+                description = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_empty_search_desc),
                 modifier = Modifier.weight(1f).fillMaxWidth(),
             )
             return@Column
@@ -162,16 +166,24 @@ fun DownloadScreen(
             task.status == DownloadStatus.PAUSED
         val message = when (task.status) {
             DownloadStatus.DONE ->
-                "将删除下载记录和设备中已保存的文件“${task.fileName}”。此操作无法撤销。"
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_dialog_delete_msg, task.fileName)
             DownloadStatus.FAILED ->
-                "将删除失败记录和可能残留的本地文件“${task.fileName}”。此操作无法撤销。"
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_dialog_failed_msg, task.fileName)
             else ->
-                "将取消当前下载，并删除任务及已产生的本地文件“${task.fileName}”。此操作无法撤销。"
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_dialog_cancel_msg, task.fileName)
         }
         ExpressiveDeleteConfirmDialog(
-            title = if (active) "取消并删除下载？" else "删除下载记录？",
+            title = if (active) {
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_dialog_cancel_title)
+            } else {
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_dialog_delete_title)
+            },
             message = message,
-            confirmLabel = if (active) "取消并删除" else "删除",
+            confirmLabel = if (active) {
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_dialog_confirm_cancel)
+            } else {
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.action_delete)
+            },
             onConfirm = {
                 deleteTarget = null
                 viewModel.delete(task.id)
@@ -254,8 +266,10 @@ private fun TaskCard(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         FormatBadge(task)
                         Spacer(Modifier.width(6.dp))
+                        val resolutionLabel = task.resolution.ifBlank { androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_original_quality) }
+                        val statusLabel = androidx.compose.ui.res.stringResource(task.status.labelRes())
                         Text(
-                            text = "${task.resolution.ifBlank { "原画" }} · ${task.status.label()}",
+                            text = "$resolutionLabel · $statusLabel",
                             style = MaterialTheme.typography.labelSmall,
                             color = when (task.status) {
                                 DownloadStatus.DONE -> MaterialTheme.colorScheme.primary
@@ -302,22 +316,22 @@ private fun TaskActions(
 ) {
     when (task.status) {
         DownloadStatus.RUNNING -> IconButton(onClick = { vm.pause(task.id) }) {
-            Icon(Icons.Filled.Pause, contentDescription = "暂停")
+            Icon(Icons.Filled.Pause, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_action_pause))
         }
         DownloadStatus.PAUSED -> IconButton(onClick = { vm.resume(task.id) }) {
-            Icon(Icons.Filled.PlayArrow, contentDescription = "恢复")
+            Icon(Icons.Filled.PlayArrow, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_action_resume))
         }
         DownloadStatus.QUEUED -> IconButton(onClick = { vm.resume(task.id) }) {
-            Icon(Icons.Filled.Refresh, contentDescription = "重新入队")
+            Icon(Icons.Filled.Refresh, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_action_requeue))
         }
         DownloadStatus.FAILED -> IconButton(onClick = { vm.retry(task.id) }) {
-            Icon(Icons.Filled.Refresh, contentDescription = "重试")
+            Icon(Icons.Filled.Refresh, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_action_retry))
         }
         DownloadStatus.DONE -> {}
     }
     // 所有状态都可删除：QUEUED/RUNNING 会取消排队任务，其余清理已完成/失败记录
     IconButton(onClick = onDeleteRequest) {
-        Icon(Icons.Filled.Delete, contentDescription = "删除")
+        Icon(Icons.Filled.Delete, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_action_delete))
     }
 }
 
@@ -336,12 +350,12 @@ private fun FormatBadge(task: DownloadTask) {
             MaterialTheme.colorScheme.onTertiaryContainer,
         )
         DownloadMediaType.IMAGE -> Triple(
-            "图片",
+            androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_filter_image),
             MaterialTheme.colorScheme.secondaryContainer,
             MaterialTheme.colorScheme.onSecondaryContainer,
         )
         DownloadMediaType.VIDEO -> Triple(
-            "视频",
+            androidx.compose.ui.res.stringResource(com.xverse.app.R.string.download_filter_video),
             // 深色模式下进一步降低容器不透明度，避免淡绿块过于跳脱。
             Color(0xFF9CE5A8).copy(alpha = if (darkSurface) 0.22f else 0.50f),
             if (darkSurface) Color(0xFFB7EDC0) else Color(0xFF155D2D),

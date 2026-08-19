@@ -37,7 +37,7 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
 
     init {
         configure()
-        LogStore.log(LogCategory.WEBVIEW, "XWebView 初始化，WebView 版本: ${WebView.getCurrentWebViewPackage()?.versionName ?: "未知"}")
+        LogStore.log(LogCategory.WEBVIEW, "XWebView initialized, WebView version: ${WebView.getCurrentWebViewPackage()?.versionName ?: "Unknown"}")
     }
 
     private fun configure() {
@@ -70,7 +70,7 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
                 WebSettingsCompat.setWebAuthenticationSupport(s, WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_APP)
             }
         } catch (e: Exception) {
-            LogStore.log(LogCategory.WEBVIEW, "启用 WebAuthn 失败: ${e.message}")
+            LogStore.log(LogCategory.WEBVIEW, "Enable WebAuthn failed: ${e.message}")
         }
 
         webViewClient = object : WebViewClient() {
@@ -81,7 +81,7 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
                     runCatching {
                         context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
                     }.onFailure {
-                        LogStore.log(LogCategory.WEBVIEW, "无法打开外部链接: $url")
+                        LogStore.log(LogCategory.WEBVIEW, "Cannot open external URL: $url")
                     }
                     return true
                 }
@@ -106,13 +106,13 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
 
             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
-                LogStore.log(LogCategory.WEBVIEW, "页面开始: $url")
+                LogStore.log(LogCategory.WEBVIEW, "Page started: $url")
                 injector.onPageStarted(url)
             }
 
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
-                LogStore.log(LogCategory.WEBVIEW, "页面完成: $url")
+                LogStore.log(LogCategory.WEBVIEW, "Page finished: $url")
                 injector.onPageFinished(url)
                 onPageFinished?.invoke(url)
             }
@@ -183,7 +183,7 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
                     }
                 )
                 serviceWorkerBlockerInstalled = true
-                LogStore.log(LogCategory.FILTER, "Service Worker 广告请求拦截器已安装")
+                LogStore.log(LogCategory.FILTER, "Service Worker ad request blocker installed")
             }
         }
     }

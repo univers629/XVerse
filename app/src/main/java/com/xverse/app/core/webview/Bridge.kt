@@ -40,7 +40,7 @@ class Bridge(webView: WebView) {
     fun call(type: String, payload: String) {
         val handler = handlers[type]
         if (handler == null) {
-            LogStore.log(LogCategory.WEBVIEW, "Bridge 收到未注册 type: $type")
+            LogStore.log(LogCategory.WEBVIEW, "Bridge received unregistered type: $type")
             return
         }
         val json = try {
@@ -56,7 +56,7 @@ class Bridge(webView: WebView) {
         try {
             handler(json, reply)
         } catch (e: Exception) {
-            LogStore.error("Bridge 处理 $type 异常", e)
+            LogStore.error("Bridge handler exception for $type", e)
             reply(JSONObject().put("ok", false).put("error", e.message))
         }
     }

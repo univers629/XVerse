@@ -26,6 +26,7 @@ class DownloadViewModel(private val locator: ServiceLocator) : ViewModel() {
 
     val filteredTasks = combine(tasks, query, selectedMediaTypes) { all, text, types ->
         val keyword = text.trim()
+        val ctx = locator.appContext
         all.filter { task ->
             task.downloadMediaType() in types && (
                 keyword.isBlank() || listOf(
@@ -33,7 +34,8 @@ class DownloadViewModel(private val locator: ServiceLocator) : ViewModel() {
                     task.tweetUrl,
                     task.format,
                     task.resolution,
-                    task.status.label(),
+                    task.status.name,
+                    ctx.getString(task.status.labelRes()),
                 ).any { it.contains(keyword, ignoreCase = true) }
             )
         }
@@ -89,11 +91,14 @@ fun DownloadTask.downloadMediaType(): DownloadMediaType {
     }
 }
 
-/** 状态文案 */
-fun DownloadStatus.label(): String = when (this) {
-    DownloadStatus.QUEUED -> "排队中"
-    DownloadStatus.RUNNING -> "下载中"
-    DownloadStatus.PAUSED -> "已暂停"
-    DownloadStatus.DONE -> "已完成"
-    DownloadStatus.FAILED -> "失败"
+/** 状态文案资源 ID */
+fun DownloadStatus.labelRes(): Int = when (this) {
+    DownloadStatus.QUEUED -> com.xverse.app.R.string.download_status_queued
+    DownloadStatus.RUNNING -> com.xverse.app.R.string.download_status_running
+    DownloadStatus.PAUSED -> com.xverse.app.R.string.download_status_paused
+    DownloadStatus.DONE -> com.xverse.app.R.string.download_status_done
+    DownloadStatus.FAILED -> com.xverse.app.R.string.download_status_failed
 }
+
+/** 状态文案 */
+fun DownloadStatus.label(context: android.content.Context): String = context.getString(labelRes())

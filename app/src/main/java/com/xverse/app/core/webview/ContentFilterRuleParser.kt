@@ -24,23 +24,23 @@ object ContentFilterRuleParser {
                 type = RuleType.CSS,
                 pattern = raw,
                 source = "user",
-                description = "元素规则：${raw.take(52)}",
+                description = "CSS: ${raw.take(52)}",
             )
             isNetworkRule(raw) -> FilterRule(
                 type = RuleType.NETWORK,
                 pattern = raw,
                 source = "user",
                 description = if (raw.startsWith("@@")) {
-                    "网络放行：${networkLabel(raw)}"
+                    "@@ ${networkLabel(raw)}"
                 } else {
-                    "网络拦截：${networkLabel(raw)}"
+                    "|| ${networkLabel(raw)}"
                 },
             )
             else -> FilterRule(
                 type = RuleType.REGEX,
                 pattern = raw,
                 source = "user",
-                description = "屏蔽词：$raw",
+                description = raw,
             )
         }
     }

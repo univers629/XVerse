@@ -173,7 +173,7 @@ class FilterScript(private val context: Context) {
         return try {
             context.assets.open(path).bufferedReader().use { it.readText() }
         } catch (e: Exception) {
-            LogStore.error("加载脚本资产失败: $path", e)
+            LogStore.error("Failed to load script asset: $path", e)
             null
         }
     }

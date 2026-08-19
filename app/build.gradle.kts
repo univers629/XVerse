@@ -13,8 +13,8 @@ android {
         applicationId = "com.xverse.app"
         minSdk = 31
         targetSdk = 37
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
     }
 
     buildTypes {
@@ -49,11 +49,11 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
     implementation("androidx.activity:activity-compose:1.13.0")
-    implementation("androidx.webkit:webkit:1.16.0")
+    implementation("androidx.webkit:webkit:1.17.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
     // Compose + Material 3
-    implementation(platform("androidx.compose:compose-bom:2026.06.01"))
+    implementation(platform("androidx.compose:compose-bom:2026.08.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
@@ -73,13 +73,13 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.11.2")
 
     // 下载网络层
-    implementation("com.squareup.okhttp3:okhttp:5.4.0")
+    implementation("com.squareup.okhttp3:okhttp:5.5.0")
 
     // SAF 目录选择（DocumentFile）
     implementation("androidx.documentfile:documentfile:1.1.0")
 
     // JSON 解析
-    implementation("org.json:json:20260719")
+    implementation("org.json:json:20260814")
 
     testImplementation("junit:junit:4.13.2")
 }

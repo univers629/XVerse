@@ -26,10 +26,10 @@ object DownloadNotifier {
         if (existing == null) {
             val ch = NotificationChannel(
                 Constants.CHANNEL_DOWNLOAD,
-                "下载任务",
+                com.xverse.app.core.util.LocaleUtils.getString(context, R.string.download_notif_channel_name),
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "下载进度与完成提醒"
+                description = com.xverse.app.core.util.LocaleUtils.getString(context, R.string.download_notif_channel_desc)
                 setShowBadge(false)
             }
             nm.createNotificationChannel(ch)
@@ -42,7 +42,7 @@ object DownloadNotifier {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setProgress(100, task.progress, task.progress <= 0)
-            .setContentTitle("下载中 · ${task.fileName}")
+            .setContentTitle(com.xverse.app.core.util.LocaleUtils.getString(context, R.string.download_notif_running_title, task.fileName))
             .setContentText("${task.progress}%${task.resolution.ifBlank { "" }.let { if (it.isNotEmpty()) " · $it" else "" }}")
             .build()
 
@@ -52,11 +52,11 @@ object DownloadNotifier {
             .setOngoing(false)
             .setAutoCancel(true)
         if (task.status == DownloadStatus.DONE) {
-            builder.setContentTitle("下载完成")
+            builder.setContentTitle(com.xverse.app.core.util.LocaleUtils.getString(context, R.string.download_notif_done_title))
                 .setContentText(task.fileName)
                 .setContentIntent(openApp(context))
         } else {
-            builder.setContentTitle("下载失败")
+            builder.setContentTitle(com.xverse.app.core.util.LocaleUtils.getString(context, R.string.download_notif_failed_title))
                 .setContentText(task.fileName + (task.error.takeIf { it.isNotBlank() }?.let { " — $it" } ?: ""))
         }
         notify(context, id, builder.build())

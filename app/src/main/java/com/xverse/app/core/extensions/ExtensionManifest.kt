@@ -52,7 +52,7 @@ object ManifestParser {
         val m = JSONObject(json)
         val mv = m.optInt("manifest_version", 3)
         if (mv != 2 && mv != 3) {
-            throw IllegalArgumentException("不支持的 manifest_version: $mv")
+            throw IllegalArgumentException("Unsupported manifest_version: $mv")
         }
         val cs = JSONArray()
         m.optJSONArray("content_scripts")?.let { arr ->

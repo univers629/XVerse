@@ -4,7 +4,7 @@
 
 <img src="docs/icon.png" width="128" height="128" alt="XVerse 图标" />
 
-一个为 x.com 打造的 Android WebView 增强壳 —— 广告过滤 · 高级搜索 · 一键下载 · 扩展加载 · 浏览历史。
+一个为 x.com 打造的 Android WebView 增强壳 —— 广告过滤 · 高级搜索 · 一键下载 · 扩展加载 · 浏览历史 · 全量多语言。
 
 纯客户端壳，**不代理流量、不改写数据、不绕过登录**；内容均来自 X 官方登录会话。
 
@@ -17,13 +17,23 @@
 
 ## 功能
 
+- **多语言国际化 (i18n)**：支持 English、简体中文、日本語，全界面组件、下拉弹窗、Toast 提示、系统通知与运行日志支持实时动态热切换与语言隔离
 - **广告与内容过滤**：支持占位验证或数据层剔除两种模式，可过滤带字幕视频；内置规则、扩展规则包、关键词和自定义 CSS 均可热更新
 - **高级搜索**：原生搜索面板组合关键词、账号、时间、互动量、媒体、位置等 X 搜索运算符，并保存本地历史与收藏
 - **一键下载**：识别推文图片、视频和动图，流式写入 MediaStore 或用户选择的 SAF 目录，支持后台任务、暂停、恢复与系统查看器打开
 - **扩展加载**：导入 `.crx`、`.zip` 和 `.user.js`，支持内容脚本、样式、配置页、`storage.local`、扩展过滤包及常用 GM API
 - **账号与历史**：使用 X 官方 Cookie 会话识别账号，按账号隔离浏览历史；详情页自动记录并缓存缩略图
+- **安全与存储加固**：会话凭据经 Android KeyStore 硬件级 AES-GCM 加密，扩展解压具备 Zip Slip 路径穿越与 Zip 炸弹防御，遵循 Android 10+ Scoped Storage 分区存储
 - **界面体验**：Material 3、系统/自定义 Monet 配色、紧凑顶栏与短时转场动画
 - **纯净内核**：纯客户端实现，不代理流量，不采集或上报用户数据
+
+## 局限性与已知不支持项 (Limitations & TODO)
+
+- [ ] ❌ **不支持通行密钥 (Passkey) 登录**：受限于 Android 系统 WebView 容器对 WebAuthn / Passkey 的通道限制，无法在应用内直接使用通行密钥登录，推荐使用账号密码/双重验证码登录或系统浏览器跳转。
+- [ ] ❌ **扩展支持的局限性**：
+  - ❌ 不支持带有常驻后台生命周期（MV3 Service Worker / MV2 Background Page）的复杂扩展；
+  - ❌ 不支持依赖 Chrome 特有桌面私有 API（如 `chrome.tabs.*`、`chrome.windows.*`、`chrome.webRequestBlocking` 等）的桌面专属扩展；
+  - ❌ 过滤类扩展仅支持通过原生解析引擎提取静态与声明式规则，无法在后台运行复杂的拦截脚本。
 
 ## 技术栈
 
@@ -43,7 +53,7 @@
 ## 设计与生命周期
 
 - `XVerseApp` 持有唯一 `ServiceLocator`，ViewModel 通过 factory 注入依赖，不依赖全局静态 Context
-- WebView 仅由界面层持有；ViewModel 使用弱引用，离开组合时停止加载、移除 Bridge、释放 client 并销毁 WebView
+- WebView 仅由界面层持有；ViewModel 使用弱引用，离开组合时停止加载、移除 Bridge、释放 client 并显式调用 `destroy()` 销毁 WebView 与释放 native 资源
 - 页面脚本的 observer、interval 与重试任务会在 `pagehide` 时回收；媒体解析、广告日志、应用日志和扩展分块会话均设置容量上限
 - 页面命令使用有界 Channel，冷启动与连续点击不会因订阅时序而静默丢失
 - Release 默认启用 R8 代码压缩和资源收缩，并保留必要的 JavaScript Bridge 接口
@@ -59,17 +69,17 @@ XVerse/
 │   │   │   └── scripts/filter/       # 广告过滤脚本
 │   │   ├── java/com/xverse/app/
 │   │   │   ├── core/
-│   │   │   │   ├── auth/             # Cookie 会话与本地账号仓库
+│   │   │   │   ├── auth/             # Cookie 会话与本地账号仓库 (KeyStore 加密)
 │   │   │   │   ├── data/             # Room 实体、DAO 与仓库
 │   │   │   │   ├── download/         # 媒体解析、下载器与后台任务
 │   │   │   │   ├── extensions/       # 扩展解析、运行时与兼容层
-│   │   │   │   ├── log/              # 有界应用日志
+│   │   │   │   ├── log/              # 有界应用日志与动态多语言本地化引擎
 │   │   │   │   ├── search/           # X 搜索语法、历史与收藏
-│   │   │   │   ├── util/             # 常量、缩略图缓存、主线程工具
+│   │   │   │   ├── util/             # 常量、缩略图缓存、动态 Context 语言解析器
 │   │   │   │   └── webview/          # WebView、脚本注入与 Bridge
 │   │   │   ├── di/                   # 手动依赖组装
-│   │   │   └── ui/                   # Compose 页面、导航与主题
-│   │   └── res/                       # 图标、主题与备份规则
+│   │   │   └── ui/                   # Compose 页面、导航、弹窗与主题
+│   │   └── res/                       # 图标、主题、多语言 (values, values-zh, values-ja) 与备份规则
 │   └── build.gradle.kts
 ├── build.gradle.kts
 ├── settings.gradle.kts

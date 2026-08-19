@@ -66,12 +66,16 @@ fun HistoryScreen(
 
     Column(modifier = modifier.fillMaxSize()) {
         ExpressivePageTitle(
-            title = "历史记录",
-            subtitle = if (state.total > 0) "共 ${state.total} 条浏览记录" else "按访问日期整理",
+            title = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_title),
+            subtitle = if (state.total > 0) {
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_subtitle_total, state.total)
+            } else {
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_subtitle_organized)
+            },
             actions = if (state.total > 0) {
                 {
                     IconButton(onClick = { showClearConfirm = true }) {
-                        Icon(Icons.Filled.DeleteSweep, contentDescription = "清空历史")
+                        Icon(Icons.Filled.DeleteSweep, contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_clear_all_title))
                     }
                 }
             } else null,
@@ -86,7 +90,7 @@ fun HistoryScreen(
                 value = query,
                 onValueChange = { viewModel.setQuery(it) },
                 modifier = Modifier.weight(1f),
-                placeholder = { Text("搜索历史…") },
+                placeholder = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_search_placeholder)) },
                 singleLine = true,
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 shape = MaterialTheme.shapes.extraLarge,
@@ -100,19 +104,19 @@ fun HistoryScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             HistoryFilterChip(
-                label = "纯文字",
+                label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_filter_text),
                 selected = HistoryMediaFilter.TEXT in selectedFilters,
                 onClick = { viewModel.toggleMediaFilter(HistoryMediaFilter.TEXT) },
                 modifier = Modifier.weight(1f),
             )
             HistoryFilterChip(
-                label = "图片",
+                label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_filter_image),
                 selected = HistoryMediaFilter.IMAGE in selectedFilters,
                 onClick = { viewModel.toggleMediaFilter(HistoryMediaFilter.IMAGE) },
                 modifier = Modifier.weight(1f),
             )
             HistoryFilterChip(
-                label = "视频",
+                label = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_filter_video),
                 selected = HistoryMediaFilter.VIDEO in selectedFilters,
                 onClick = { viewModel.toggleMediaFilter(HistoryMediaFilter.VIDEO) },
                 modifier = Modifier.weight(1f),
@@ -123,11 +127,15 @@ fun HistoryScreen(
             val filtering = query.isNotBlank() || selectedFilters.isNotEmpty()
             ExpressiveEmptyState(
                 icon = if (filtering) Icons.Filled.Search else Icons.Filled.History,
-                title = if (filtering) "没有符合条件的记录" else "暂无历史记录",
-                description = if (filtering) {
-                    "请调整搜索内容或媒体类型筛选。"
+                title = if (filtering) {
+                    androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_empty_search_title)
                 } else {
-                    "浏览推文后，记录会按每天自动整理在这里。"
+                    androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_empty_title)
+                },
+                description = if (filtering) {
+                    androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_empty_search_desc)
+                } else {
+                    androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_empty_desc)
                 },
                 modifier = Modifier.weight(1f).fillMaxWidth(),
             )
@@ -154,13 +162,13 @@ fun HistoryScreen(
     if (showClearConfirm) {
         val filtering = query.isNotBlank() || selectedFilters.isNotEmpty()
         ExpressiveDeleteConfirmDialog(
-            title = "清空全部历史？",
+            title = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_clear_all_title),
             message = if (filtering) {
-                "将删除当前账号的全部浏览记录，包括当前筛选中未显示的记录。此操作无法撤销。"
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_clear_all_msg_filtered)
             } else {
-                "将删除当前账号的全部 ${state.total} 条浏览记录。此操作无法撤销。"
+                androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_clear_all_msg, state.total)
             },
-            confirmLabel = "全部删除",
+            confirmLabel = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_action_delete_all),
             onConfirm = {
                 showClearConfirm = false
                 viewModel.clearAll()
@@ -170,9 +178,11 @@ fun HistoryScreen(
     }
 
     deleteTarget?.let { record ->
+        val unknownUser = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_unknown_user)
+        val userLabel = "@${record.username.ifBlank { unknownUser }}"
         ExpressiveDeleteConfirmDialog(
-            title = "删除这条历史？",
-            message = "将删除 @${record.username.ifBlank { "未知用户" }} 的这条浏览记录。此操作无法撤销。",
+            title = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_delete_single_title),
+            message = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_delete_single_msg, userLabel),
             onConfirm = {
                 deleteTarget = null
                 viewModel.delete(record)
@@ -261,13 +271,14 @@ private fun HistoryRow(
                     .weight(1f)
                     .padding(start = if (thumb.isNotBlank()) 10.dp else 0.dp),
             ) {
+                val unknownUser = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_unknown_user)
                 val author = buildString {
                     if (record.displayName.isNotBlank()) {
                         append(record.displayName)
                         append(' ')
                     }
                     append('@')
-                    append(record.username.ifBlank { "未知用户" })
+                    append(record.username.ifBlank { unknownUser })
                 }
                 Text(
                     text = author,
@@ -285,7 +296,7 @@ private fun HistoryRow(
                     )
                 }
                 Text(
-                    text = "访问于 ${formatTime(record.visitedAt)}",
+                    text = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_visited_at, formatTime(record.visitedAt)),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 2.dp),
@@ -294,14 +305,14 @@ private fun HistoryRow(
             IconButton(onClick = onShare) {
                 Icon(
                     Icons.Filled.Share,
-                    contentDescription = "分享",
+                    contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_action_share),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             IconButton(onClick = onDelete) {
                 Icon(
                     Icons.Filled.Delete,
-                    contentDescription = "删除",
+                    contentDescription = androidx.compose.ui.res.stringResource(com.xverse.app.R.string.history_action_delete),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }

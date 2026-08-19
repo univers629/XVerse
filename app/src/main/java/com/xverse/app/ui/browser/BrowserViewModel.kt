@@ -214,7 +214,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
             viewModelScope.launch {
                 val removed = locator.historyRepo.deleteOrphanMediaviewer()
                 if (removed > 0) {
-                    LogStore.log(LogCategory.HISTORY, "清理 mediaviewer 重复历史 $removed 条")
+                    LogStore.log(LogCategory.HISTORY, "Cleaned mediaviewer duplicate history: $removed items")
                 }
             }
         }
@@ -276,7 +276,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
         }
         LogStore.log(
             com.xverse.app.core.log.LogCategory.FILTER,
-            "扩展注入已更新：x${enabled.size} 个",
+            "Extension injection updated: x${enabled.size}",
         )
     }
 
@@ -331,7 +331,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
             val enabled = locator.settings.filterEnabled.first()
             if (!enabled) {
                 view.setAdNetworkBlocking(false)
-                LogStore.log(LogCategory.FILTER, "过滤已关闭，跳过注入")
+                LogStore.log(LogCategory.FILTER, "Filter disabled, skipping injection")
                 return true
             }
             locator.ensureBuiltinFilterRules()
@@ -364,7 +364,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
                 // 规则变更：直接执行用户规则 + CSS（幂等，会覆盖旧匹配结果）
                 view.injector.evaluate(fs.userRuleScript(rules))
                 view.injector.evaluate(fs.userCss(rules))
-                LogStore.log(LogCategory.FILTER, "过滤规则已热更新：x${rules.size}")
+                LogStore.log(LogCategory.FILTER, "Filter rules hot-reloaded: x${rules.size}")
                 return true
             }
             fs.buildEarlyScripts(
@@ -374,15 +374,16 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
                 aiLabel,
                 extensionCssSelectors,
             ).forEach { view.injector.addEarly(it) }
+            val ccStatus = if (ccVideos) "ON" else "OFF"
+            val aiStatus = if (aiLabel) "ON" else "OFF"
+            val integratedCount = extensionAllowedHosts.size + extensionBlockedHosts.size + extensionCssSelectors.size
             LogStore.log(
                 LogCategory.FILTER,
-                "过滤脚本就绪（模式 $mode，CC 视频 ${if (ccVideos) "过滤" else "不过滤"}，" +
-                    "AI 标签 ${if (aiLabel) "过滤" else "不过滤"}）：内置 + 用户规则 ${rules.size}，" +
-                    "集成规则 ${extensionAllowedHosts.size + extensionBlockedHosts.size + extensionCssSelectors.size}"
+                "Filter script ready (mode=$mode, cc=$ccStatus, ai=$aiStatus): builtin+user=${rules.size}, integrated=$integratedCount",
             )
             true
         } catch (e: Exception) {
-            LogStore.error("加载过滤脚本失败", e)
+            LogStore.error("Failed to load filter script", e)
             false
         }
     }
@@ -462,7 +463,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
                 delay(1000)
                 if (locator.authController.username.value.isNotBlank()) return@launch
             }
-            LogStore.log(LogCategory.AUTH, "未能从页面导航栏识别当前用户名")
+            LogStore.log(LogCategory.AUTH, "Could not identify current username from navbar")
         }
     }
 
@@ -470,7 +471,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
 
     /** 打开登录页：直接在 WebView 内加载，Cookie 写入 WebView 存储 */
     fun startLogin() {
-        LogStore.log(LogCategory.AUTH, "在 WebView 内打开登录页")
+        LogStore.log(LogCategory.AUTH, "Opening login page inside WebView")
         loadUrl(Constants.LOGIN_URL)
     }
 
@@ -551,7 +552,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
                     locator.historyRepo.upsert(record.copy(thumbPath = thumbPath))
                 }
             }
-            LogStore.log(LogCategory.HISTORY, "已记录: @$username/$tweetId")
+            LogStore.log(LogCategory.HISTORY, "Recorded: @$username/$tweetId")
             // 缩略图缺失（点击详情早于 GraphQL 缓存）：延迟重试，缓存就绪后补写同一记录。
             // 最多 4 次 × 1s，覆盖「进页面即点详情」的最坏时序。
             if (mUrl.isBlank()) {
@@ -575,7 +576,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
                             record.copy(mediaType = cachedType, mediaUrl = cached, thumbPath = thumbPath)
                         )
                     }
-                    LogStore.log(LogCategory.HISTORY, "缩略图补写: @$username/$tweetId")
+                    LogStore.log(LogCategory.HISTORY, "Thumbnail updated: @$username/$tweetId")
                     break
                 }
             }
@@ -700,16 +701,20 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
                 // url StateFlow 只在整页加载（onPageFinished）时更新，停留在首页等旧地址
                 val tweetUrl = currentPageUrl()
                 if (tweetUrl.isBlank() || !isTweetUrl(tweetUrl)) {
-                    toast("请在推文页面使用下载")
+                    toast(com.xverse.app.R.string.browser_toast_use_in_tweet)
                     return@launch
                 }
                 val items = locator.downloadController.parseTweet(tweetUrl)
                 _mediaList.value = items
-                if (items.isEmpty()) toast("未解析到媒体")
+                if (items.isEmpty()) toast(com.xverse.app.R.string.browser_no_media_found)
             } finally {
                 _parsing.value = false
             }
         }
+    }
+
+    private fun toast(resId: Int) {
+        toast(com.xverse.app.core.util.LocaleUtils.getString(locator.appContext, resId))
     }
 
     /** 实时读取页面地址（evaluateJavascript 通道，SPA 导航也准确） */
@@ -742,7 +747,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
             val tweetUrl = currentPageUrl()
             if (tweetUrl.isBlank()) return@launch
             val ok = locator.downloadController.enqueue(tweetUrl, item)
-            toast(if (ok) "已加入下载队列" else "下载入队失败")
+            toast(if (ok) com.xverse.app.R.string.browser_toast_queue_success else com.xverse.app.R.string.browser_toast_queue_failed)
         }
     }
 
@@ -769,7 +774,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
      * 必须走重建路径让下一整页加载按新模式注入。
      */
     fun reapplyInjections() {
-        LogStore.log(LogCategory.FILTER, "过滤方式变更：重建注入 + reload 首页")
+        LogStore.log(LogCategory.FILTER, "Filter mode changed: rebuilding injection and reloading page")
         rebuildWebView()
     }
 
@@ -789,7 +794,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
                 " window.__xvFilterCard.revealCc();"
         }
         wv.injector.evaluate(js)
-        LogStore.log(LogCategory.FILTER, "CC 视频过滤 ${if (on) "开" else "关"}（热更新标记，不重载）")
+        LogStore.log(LogCategory.FILTER, "CC video filter ${if (on) "ON" else "OFF"} (hot-updated flag, no reload)")
     }
 
     /**
@@ -807,7 +812,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
                 " window.__xvFilterCard.revealAi();"
         }
         wv.injector.evaluate(js)
-        LogStore.log(LogCategory.FILTER, "AI 标签过滤 ${if (on) "开" else "关"}（热更新标记，不重载）")
+        LogStore.log(LogCategory.FILTER, "AI label filter ${if (on) "ON" else "OFF"} (hot-updated flag, no reload)")
     }
 
     companion object {

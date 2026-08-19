@@ -86,7 +86,7 @@ class JsInjector(private val webView: WebView) {
                 bundle,
                 X_ORIGIN_RULES,
             )
-            LogStore.log(LogCategory.FILTER, "WebView 原生 document_start 已注册 x${scripts.size}")
+            LogStore.log(LogCategory.FILTER, "WebView native document_start registered x${scripts.size}")
         }
     }
 
@@ -98,26 +98,26 @@ class JsInjector(private val webView: WebView) {
     /** 页面开始加载：注入拦截脚本 */
     fun onPageStarted(url: String) {
         if (nativeDocumentStartSupported) {
-            LogStore.log(LogCategory.FILTER, "原生 document_start 已先于页面执行 x${earlyScripts.size + keyedEarlyScripts.size} → $url")
+            LogStore.log(LogCategory.FILTER, "Native document_start executed before page x${earlyScripts.size + keyedEarlyScripts.size} -> $url")
         } else {
             val scripts = earlyScripts + keyedEarlyScripts.values
-            LogStore.log(LogCategory.FILTER, "WebView 不支持原生 document_start，回退 early 注入 x${scripts.size} → $url")
+            LogStore.log(LogCategory.FILTER, "WebView lacks native document_start, falling back to early injection x${scripts.size} -> $url")
             scripts.forEach { evaluate(wrapIife(it)) }
         }
         val p = extProvider?.invoke()
         if (p != null) {
-            LogStore.log(LogCategory.FILTER, "注入扩展 early bundle → $url")
+            LogStore.log(LogCategory.FILTER, "Injected extension early bundle -> $url")
             evaluate(p.first)
         }
     }
 
     /** 页面加载完成：注入增强脚本 */
     fun onPageFinished(url: String) {
-        LogStore.log(LogCategory.FILTER, "注入 late 脚本 x${lateScripts.size} → $url")
+        LogStore.log(LogCategory.FILTER, "Injected late scripts x${lateScripts.size} -> $url")
         lateScripts.forEach { evaluate(wrapIife(it)) }
         val p = extProvider?.invoke()
         if (p != null) {
-            LogStore.log(LogCategory.FILTER, "注入扩展 late bundle → $url")
+            LogStore.log(LogCategory.FILTER, "Injected extension late bundle -> $url")
             evaluate(p.second)
         }
         // 注入 JS 桥事件监听（让页面可接收原生推送）
@@ -130,7 +130,7 @@ class JsInjector(private val webView: WebView) {
             try {
                 webView.evaluateJavascript(script, null)
             } catch (e: Exception) {
-                LogStore.error("evaluateJavascript 失败", e)
+                LogStore.error("evaluateJavascript failed", e)
             }
         }
     }

@@ -88,7 +88,7 @@ class DownloadController(
             )
             val id = repo.insert(task)
             scheduleWorker(id, task.copy(id = id))
-            LogStore.log(LogCategory.DOWNLOAD, "已入队: $finalName（${media.quality}）")
+            LogStore.log(LogCategory.DOWNLOAD, "Queued: $finalName (${media.quality})")
             // 缩略图落盘走 IO 线程，避免阻塞入队（WorkManager 已启动，不等待）。
             // 落盘后只定向更新 thumbPath 字段，不用入队快照覆盖整行——
             // 下载可能在缩略图写完前就完成（status=DONE、contentUri 已落库），整行覆盖会冲掉这些字段。
@@ -104,7 +104,7 @@ class DownloadController(
             }
             true
         } catch (e: Exception) {
-            LogStore.error("创建下载任务失败", e)
+            LogStore.error("Failed to create download task", e)
             false
         }
     }
@@ -124,7 +124,7 @@ class DownloadController(
             }
             val uri = writeBytesToConfiguredTarget(dirPath, finalName, bytes)
             if (uri == null) {
-                LogStore.log(LogCategory.DOWNLOAD, "扩展直存失败: $finalName")
+                LogStore.log(LogCategory.DOWNLOAD, "Extension direct save failed: $finalName")
                 return false
             }
             val displayPath = if (dirPath.isBlank()) mediaStoreRelPath(finalName) else dirPath
@@ -140,10 +140,10 @@ class DownloadController(
                 contentUri = uri.toString(),
             )
             repo.insert(task)
-            LogStore.log(LogCategory.DOWNLOAD, "扩展直存: $finalName（${bytes.size} B → $displayPath）")
+            LogStore.log(LogCategory.DOWNLOAD, "Extension direct save: $finalName (${bytes.size} B -> $displayPath)")
             true
         } catch (e: Exception) {
-            LogStore.error("扩展字节直存失败", e)
+            LogStore.error("Failed to directly save extension bytes", e)
             false
         }
     }
@@ -188,7 +188,7 @@ class DownloadController(
                 }
                 u
             } catch (e: Exception) {
-                LogStore.error("MediaStore 写入失败: $fileName", e)
+                LogStore.error("Failed to write to MediaStore: $fileName", e)
                 null
             }
         }
@@ -206,7 +206,7 @@ class DownloadController(
                 }
                 doc.uri
             } catch (e: Exception) {
-                LogStore.error("SAF 写入失败: $fileName", e)
+                LogStore.error("Failed to write to SAF: $fileName", e)
                 null
             }
         }
@@ -249,10 +249,10 @@ class DownloadController(
             )
             val id = repo.insert(task)
             scheduleWorker(id, task.copy(id = id))
-            LogStore.log(LogCategory.DOWNLOAD, "扩展直链已入队: $finalName")
+            LogStore.log(LogCategory.DOWNLOAD, "Extension URL queued: $finalName")
             true
         } catch (e: Exception) {
-            LogStore.error("扩展直链下载失败", e)
+            LogStore.error("Failed to download extension direct URL", e)
             false
         }
     }
@@ -318,17 +318,17 @@ class DownloadController(
      * 文件未完成/不存在 → 也返回提示（不再静默无响应）。
      */
     suspend fun open(id: Long): String? {
-        val task = repo.findById(id) ?: return "任务不存在"
+        val task = repo.findById(id) ?: return com.xverse.app.core.util.LocaleUtils.getString(context, com.xverse.app.R.string.download_err_not_found)
         // URI 解析可能在 IO 上做 SAF→MediaStore 复制，放 IO 线程；Intent 启动切回 Main
         val uri = withContext(Dispatchers.IO) { resolveReadableUri(task) }
         return withContext(Dispatchers.Main) {
             if (uri == null) {
                 when {
                     task.status != DownloadStatus.DONE ->
-                        "文件未下载完成，无法打开"
+                        com.xverse.app.core.util.LocaleUtils.getString(context, com.xverse.app.R.string.download_err_not_finished)
                     task.contentUri.isBlank() && task.dirPath.isBlank() ->
-                        "文件位置不可用"
-                    else -> "文件不存在或已被移动"
+                        com.xverse.app.core.util.LocaleUtils.getString(context, com.xverse.app.R.string.download_err_location_unavailable)
+                    else -> com.xverse.app.core.util.LocaleUtils.getString(context, com.xverse.app.R.string.download_err_file_not_found)
                 }
             } else {
                 val mime = mimeFor(task.fileName)
@@ -341,8 +341,8 @@ class DownloadController(
                     context.startActivity(intent)
                     null
                 } catch (e: Exception) {
-                    LogStore.error("打开下载文件失败", e)
-                    "没有应用可以打开该文件类型"
+                    LogStore.error("Failed to open downloaded file", e)
+                    com.xverse.app.core.util.LocaleUtils.getString(context, com.xverse.app.R.string.download_err_no_app_to_open)
                 }
             }
         }
@@ -370,7 +370,7 @@ class DownloadController(
                 } else null
             }
         } catch (e: Exception) {
-            LogStore.error("解析可读 URI 失败", e)
+            LogStore.error("Failed to resolve readable URI", e)
             null
         }
     }
@@ -421,7 +421,7 @@ class DownloadController(
                 repo.update(task.copy(contentUri = uri.toString()))
                 uri
             } catch (e: Exception) {
-                LogStore.error("SAF 导入相册失败", e)
+                LogStore.error("Failed to import SAF to gallery", e)
                 null
             }
         }
