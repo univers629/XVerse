@@ -80,9 +80,7 @@ class MainActivity : ComponentActivity() {
         java.util.Locale.setDefault(targetLocale)
         val conf = android.content.res.Configuration(newBase.resources.configuration)
         conf.setLocale(targetLocale)
-        if (android.os.Build.VERSION.SDK_INT >= 24) {
-            conf.setLocales(android.os.LocaleList(targetLocale))
-        }
+        conf.setLocales(android.os.LocaleList(targetLocale))
         applyOverrideConfiguration(conf)
         val localizedBase = newBase.createConfigurationContext(conf)
         super.attachBaseContext(localizedBase)
@@ -92,9 +90,7 @@ class MainActivity : ComponentActivity() {
         val lang = com.xverse.app.core.data.repo.SettingsRepo.getSavedAppLanguage(this)
         val targetLocale = com.xverse.app.core.util.LocaleUtils.getLocale(lang)
         newConfig.setLocale(targetLocale)
-        if (android.os.Build.VERSION.SDK_INT >= 24) {
-            newConfig.setLocales(android.os.LocaleList(targetLocale))
-        }
+        newConfig.setLocales(android.os.LocaleList(targetLocale))
         super.onConfigurationChanged(newConfig)
         com.xverse.app.core.util.LocaleUtils.applyLocale(this, lang)
     }
@@ -102,7 +98,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         val lang = com.xverse.app.core.data.repo.SettingsRepo.getSavedAppLanguage(this)
         com.xverse.app.core.util.LocaleUtils.applyLocale(this, lang)
-        (application as? com.xverse.app.XVerseApp)?.updateAppLocale(lang)
+        (application as? XVerseApp)?.updateAppLocale(lang)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         // 请求通知权限（仅 33+ 需要）
@@ -237,12 +233,8 @@ fun MainScreen(mainViewModel: MainViewModel) {
     }
 
     val targetLocale = remember(appLanguage) {
-        val systemLocale = if (android.os.Build.VERSION.SDK_INT >= 24) {
-            android.content.res.Resources.getSystem().configuration.locales[0] ?: java.util.Locale.getDefault()
-        } else {
-            @Suppress("DEPRECATION")
-            android.content.res.Resources.getSystem().configuration.locale ?: java.util.Locale.getDefault()
-        }
+        val systemLocale = android.content.res.Resources.getSystem().configuration.locales[0]
+            ?: java.util.Locale.getDefault()
         when (appLanguage) {
             "zh" -> java.util.Locale.SIMPLIFIED_CHINESE
             "ja" -> java.util.Locale.JAPANESE

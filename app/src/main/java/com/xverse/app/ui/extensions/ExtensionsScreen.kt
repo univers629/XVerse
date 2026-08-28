@@ -296,6 +296,7 @@ private fun ExtensionCard(ext: ExtensionEntity, viewModel: ExtensionsViewModel) 
     if (showUninstallConfirm) {
         com.xverse.app.ui.common.AppAlertDialog(
             onDismissRequest = { showUninstallConfirm = false },
+            shape = RoundedCornerShape(20.dp),
             title = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_dialog_uninstall_title)) },
             text = { Text(androidx.compose.ui.res.stringResource(com.xverse.app.R.string.ext_dialog_uninstall_msg, ext.name)) },
             confirmButton = {

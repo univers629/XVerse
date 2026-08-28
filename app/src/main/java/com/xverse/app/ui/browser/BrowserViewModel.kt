@@ -67,6 +67,11 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
     private var initialized = false
     private var legacyHistoryCleanupStarted = false
 
+    /** 页面侧单帖解析的在途请求（reqId → 结果）；超时/页面无响应时由调用方清理。 */
+    private val pendingTweetResolves =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<String>>()
+    private val tweetResolveSeq = java.util.concurrent.atomic.AtomicLong(0)
+
     private val xSearchStore by lazy(LazyThreadSafetyMode.NONE) {
         XSearchStore(locator.appContext)
     }
@@ -191,6 +196,18 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
             }
         }
         // 用户名优先从导航栏读取；移动布局未渲染个人主页链接时，由账户设置接口异步回传。
+        // Bridge：页面按 id 现取的单帖 JSON 回传（下载按钮触发的 __xvResolveTweet）
+        bridge.register("tweetResolved") { payload, _ ->
+            val reqId = payload.optString("reqId")
+            if (reqId.isNotEmpty()) {
+                pendingTweetResolves.remove(reqId)?.complete(payload.optString("data"))
+            }
+        }
+        // 缓存未命中时让 MediaParser 反向问页面要这一条推文：页面上下文有登录态，
+        // 且用的是 WebView 自己的网络栈，敏感帖 / SPA 前端缓存两种 miss 都能兜住。
+        locator.mediaParser.pageResolver = object : com.xverse.app.core.download.PageTweetResolver {
+            override suspend fun resolveTweet(tweetId: String): String? = resolveTweetInPage(tweetId)
+        }
         bridge.register("accountName") { payload, _ ->
             payload.optString("username").takeIf { it.isNotBlank() }?.let {
                 locator.authController.setUsername(it)
@@ -227,6 +244,35 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
             if (pageUrl.contains("/status/") && !pageUrl.contains("/mediaviewer", ignoreCase = true)) {
                 scheduleHistoryWrite(pageUrl)
             }
+        }
+    }
+
+    /**
+     * 让当前页面按 tweetId 现取**这一条**推文的 JSON（GraphQL / syndication，页面上下文执行）。
+     *
+     * 只解析被点的那一条：reqId 一一对应一次下载点击，JS 侧不遍历时间线、不批量抓整页媒体。
+     * 页面无响应（脚本未注入 / 非 x.com 页面）时按超时返回 null，由 MediaParser 继续降级。
+     */
+    private suspend fun resolveTweetInPage(tweetId: String): String? {
+        val id = tweetId.filter { it.isDigit() }
+        if (id.isEmpty()) return null
+        val target = webView ?: return null
+        val reqId = "xv" + tweetResolveSeq.incrementAndGet()
+        val deferred = kotlinx.coroutines.CompletableDeferred<String>()
+        pendingTweetResolves[reqId] = deferred
+        return try {
+            com.xverse.app.core.util.UiExecutor.post {
+                runCatching {
+                    target.evaluateJavascript(
+                        "window.__xvResolveTweet && window.__xvResolveTweet('$reqId','$id');",
+                        null,
+                    )
+                }
+            }
+            kotlinx.coroutines.withTimeoutOrNull(PAGE_RESOLVE_TIMEOUT_MS) { deferred.await() }
+                ?.takeIf { it.isNotBlank() }
+        } finally {
+            pendingTweetResolves.remove(reqId)
         }
     }
 
@@ -765,6 +811,9 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
         filterRulesJob?.cancel()
         appearanceSettingsJob?.cancel()
         extensionWatchJob?.cancel()
+        locator.mediaParser.pageResolver = null
+        pendingTweetResolves.values.forEach { it.complete("") }
+        pendingTweetResolves.clear()
         webViewRef.clear()
     }
 
@@ -817,6 +866,9 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
 
     companion object {
         private const val WEB_APPEARANCE_SCRIPT_KEY = "web-appearance"
+
+        /** 页面侧单帖解析超时：GraphQL + syndication 两跳的上限，超时后交回原生兜底通道。 */
+        private const val PAGE_RESOLVE_TIMEOUT_MS = 6000L
 
         private val X_HOSTS = setOf(
             "x.com",
@@ -1395,10 +1447,97 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
               // 不只 TweetDetail；响应含媒体才解析上报（快速路径过滤，性能可接受）
               var endpointTest = /\/graphql\/[A-Za-z0-9_-]+\//;
               var MAX_BYTES = 8388608; // 8MB
-              // 当前页面推文 id（/user/status/12345 → 12345），用于缓存按推文区分
-              var pageTweetId = '';
-              var pm = location.pathname.match(/\/status\/(\d+)/);
-              if (pm) pageTweetId = pm[1];
+              // ── 单帖按需解析所需的现场情报 ────────────────────────────
+              // 页面自己发 /graphql/ 请求时顺手记下 queryId / features / 授权头；
+              // 之后就能用同一套参数只查「某一条」推文。不改变页面任何行为。
+              var GQL_STORE_KEY = 'xv.gqlOps';
+              var PUBLIC_BEARER = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+              var STORE_LIMIT = 60;
+              var nativeFetch = null;
+              // 「推文 id → 该帖自己的媒体」索引：只把页面本来就收到的响应按 id 归档，
+              // 不因此多发任何请求；用户点某一条时 O(1) 取那一条，绝不批量解析整页。
+              window.__xvMediaStore = window.__xvMediaStore || {};
+              var storeOrder = [];
+              function remember(id, obj) {
+                if (!id || !obj) return;
+                if (!window.__xvMediaStore[id]) storeOrder.push(id);
+                window.__xvMediaStore[id] = obj;
+                while (storeOrder.length > STORE_LIMIT) {
+                  var gone = storeOrder.shift();
+                  if (gone !== id) delete window.__xvMediaStore[gone];
+                }
+              }
+              function cookieOf(name) {
+                try {
+                  var all = document.cookie.split(';');
+                  for (var i = 0; i < all.length; i++) {
+                    var kv = all[i].trim();
+                    if (kv.indexOf(name + '=') === 0) return decodeURIComponent(kv.slice(name.length + 1));
+                  }
+                } catch (e) {}
+                return '';
+              }
+              function gqlOps() {
+                if (window.__xvGqlOps) return window.__xvGqlOps;
+                var m = {};
+                try { m = JSON.parse(localStorage.getItem(GQL_STORE_KEY) || '{}') || {}; } catch (e) { m = {}; }
+                window.__xvGqlOps = m;
+                return m;
+              }
+              // queryId / features 随 X 前端发版变化：持久化后即使当前页没发过对应请求，
+              // 也能用上次记下的参数发起单帖查询（失败再退到 syndication）。
+              function noteGql(url) {
+                try {
+                  var raw = String(url);
+                  var m = raw.match(/\/graphql\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_]+)/);
+                  if (!m) return;
+                  var qi = raw.indexOf('?');
+                  var sp = new URLSearchParams(qi >= 0 ? raw.slice(qi + 1) : '');
+                  var ops = gqlOps();
+                  var prev = ops[m[2]] || {};
+                  var rec = {
+                    qid: m[1],
+                    features: sp.get('features') || prev.features || '',
+                    fieldToggles: sp.get('fieldToggles') || prev.fieldToggles || '',
+                    variables: sp.get('variables') || prev.variables || ''
+                  };
+                  if (prev.qid === rec.qid && prev.features === rec.features &&
+                      prev.fieldToggles === rec.fieldToggles && prev.variables === rec.variables) return;
+                  ops[m[2]] = rec;
+                  try { localStorage.setItem(GQL_STORE_KEY, JSON.stringify(ops)); } catch (e) {}
+                } catch (e) {}
+              }
+              function noteHeader(name, value) {
+                try {
+                  if (!name || !value) return;
+                  var n = String(name).toLowerCase();
+                  if (n === 'authorization') window.__xvBearer = String(value);
+                  else if (n === 'x-csrf-token') window.__xvCsrf = String(value);
+                } catch (e) {}
+              }
+              function noteHeaders(h) {
+                try {
+                  if (!h) return;
+                  if (h instanceof Array) {
+                    for (var i = 0; i < h.length; i++) noteHeader(h[i][0], h[i][1]);
+                  } else if (typeof h.forEach === 'function') {
+                    h.forEach(function(v, k){ noteHeader(k, v); });
+                  } else {
+                    Object.keys(h).forEach(function(k){ noteHeader(k, h[k]); });
+                  }
+                } catch (e) {}
+              }
+              // 当前页面推文 id，用于缓存按推文区分。SPA 用 pushState/replaceState 导航，
+              // document_start 时算一次会永久停在入口帖，必须每次上报时实时读。
+              // 竖屏刷视频（/status/<宿主>/mediaViewer?currentTweet=<当前>）以 currentTweet 为准。
+              function currentTargetId() {
+                try {
+                  var cur = new URLSearchParams(location.search).get('currentTweet');
+                  if (cur && /^\d+$/.test(cur)) return cur;
+                  var pm = location.pathname.match(/\/status\/(\d+)/);
+                  return pm ? pm[1] : '';
+                } catch (e) { return ''; }
+              }
 
               function tryReport(text) {
                 // 快速路径：不含媒体标记直接跳过（避免对每个 API 响应做 JSON.parse）
@@ -1412,6 +1551,38 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
                   function hasMediaObj(o) {
                     return o && typeof o === 'object' && o.media_url_https;
                   }
+                  // extended_entities 才带 video_info（可下载直链）；entities.media 对视频
+                  // 只有封面，原生侧解析不出直链，所以放在最后当兜底。
+                  function mediaOf(o) {
+                    if (!o || typeof o !== 'object') return [];
+                    var leg = o.legacy;
+                    if (leg && leg.extended_entities && leg.extended_entities.media && leg.extended_entities.media.length) {
+                      return leg.extended_entities.media;
+                    }
+                    if (o.media && o.media.length) return o.media;
+                    if (leg && leg.entities && leg.entities.media && leg.entities.media.length) {
+                      return leg.entities.media;
+                    }
+                    return [];
+                  }
+                  // 归档：把这次响应里出现过的带媒体推文按各自 id 记下（纯索引，不发请求）。
+                  // 竖屏 mediaViewer 左右滑动时页面只在一次批量响应里带过这些帖，之后不再重发，
+                  // 归档后用户点到哪一条都能立刻取到**那一条**自己的媒体。
+                  function indexTweets(node, depth) {
+                    if (!node || typeof node !== 'object' || depth > 20) return;
+                    var nid = node.rest_id || node.id_str;
+                    if (nid && /^\d+$/.test(String(nid))) {
+                      var mine = mediaOf(node);
+                      if (mine.length && hasMediaObj(mine[0])) {
+                        remember(String(nid), node.legacy ? {legacy: node.legacy} : {media: mine});
+                      }
+                    }
+                    var ik = node instanceof Array ? node : Object.keys(node);
+                    for (var n = 0; n < ik.length; n++) {
+                      indexTweets(node instanceof Array ? node[n] : node[ik[n]], depth + 1);
+                    }
+                  }
+                  indexTweets(d, 0);
                   function findTweet(obj, depth) {
                     if (!obj || typeof obj !== 'object' || depth > 20) return null;
                     var leg = obj.legacy;
@@ -1428,15 +1599,23 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
                     }
                     return null;
                   }
-                  var tresult = findTweet(d, 0);
+                  // 先按当前详情页的推文 id 精确取那一条：TweetDetail 响应里同时有
+                  // 引用帖与回复线程，取「第一个带媒体的对象」会把别人的媒体缓存到本帖 id 上，
+                  // 也会让本帖 id 始终 miss。只认这一条，不做整页/时间线批量收集。
+                  var pageTweetId = currentTargetId();
+                  function findTweetById(obj, id, depth) {
+                    if (!obj || typeof obj !== 'object' || depth > 20 || !id) return null;
+                    if ((obj.rest_id === id || obj.id_str === id) && mediaOf(obj).length) return obj;
+                    var ks = obj instanceof Array ? obj : Object.keys(obj);
+                    for (var i = 0; i < ks.length; i++) {
+                      var r = findTweetById(obj instanceof Array ? obj[i] : obj[ks[i]], id, depth + 1);
+                      if (r) return r;
+                    }
+                    return null;
+                  }
+                  var tresult = findTweetById(d, pageTweetId, 0) || findTweet(d, 0);
                   if (!tresult) return;
-                  var media = (tresult.legacy && tresult.legacy.extended_entities &&
-                              tresult.legacy.extended_entities.media &&
-                              tresult.legacy.extended_entities.media.length)
-                              ? tresult.legacy.extended_entities.media
-                              : (tresult.media && tresult.media.length ? tresult.media
-                                 : (tresult.legacy && tresult.legacy.entities && tresult.legacy.entities.media
-                                    ? tresult.legacy.entities.media : []));
+                  var media = mediaOf(tresult);
                   console.log('[XV] graphql media=' + media.length);
                   if (window.XVerseNative) {
                     // 只上报主推文的 legacy（不含回复线程），避免把评论区媒体也计入
@@ -1450,6 +1629,107 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
                   }
                 } catch (e) {}
               }
+
+              // ── 按需解析入口（原生下载按钮触发）──────────────────────
+              // 严格单帖：只处理传入的 tweetId，不遍历时间线、不批量解析当前页媒体。
+              function pageFetch(url, opts) {
+                return (nativeFetch || window.fetch)(url, opts);
+              }
+              function gqlHeaders() {
+                var h = {
+                  'authorization': window.__xvBearer || PUBLIC_BEARER,
+                  'x-twitter-active-user': 'yes',
+                  'x-twitter-auth-type': 'OAuth2Session'
+                };
+                var csrf = window.__xvCsrf || cookieOf('ct0');
+                if (csrf) h['x-csrf-token'] = csrf;
+                var lang = cookieOf('lang');
+                if (lang) h['x-twitter-client-language'] = lang;
+                return h;
+              }
+              // 复用页面自己用过的 variables 骨架（含各类 with* 开关）+ features，
+              // 只把目标推文换成这一条；缺 queryId 就返回空串让调用方降级。
+              function gqlUrl(name, idKey, id) {
+                var rec = gqlOps()[name];
+                if (!rec || !rec.qid) return '';
+                var vars = {};
+                try { vars = JSON.parse(rec.variables || '{}') || {}; } catch (e) { vars = {}; }
+                delete vars.cursor;
+                delete vars.focalTweetId;
+                delete vars.tweetId;
+                vars[idKey] = id;
+                var u = '/i/api/graphql/' + rec.qid + '/' + name +
+                  '?variables=' + encodeURIComponent(JSON.stringify(vars));
+                if (rec.features) u += '&features=' + encodeURIComponent(rec.features);
+                if (rec.fieldToggles) u += '&fieldToggles=' + encodeURIComponent(rec.fieldToggles);
+                return u;
+              }
+              function viaGql(name, idKey, id) {
+                var u = gqlUrl(name, idKey, id);
+                if (!u) return Promise.resolve(null);
+                return pageFetch(u, {headers: gqlHeaders(), credentials: 'include'})
+                  .then(function(r){ return r && r.ok ? r.text() : ''; })
+                  .then(function(t){
+                    if (!t) return null;
+                    tryReport(t);
+                    return window.__xvMediaStore[id] || null;
+                  })
+                  .catch(function(){ return null; });
+              }
+              // syndication 单帖接口：无需登录态，但敏感/年龄限制帖只回 TweetTombstone，
+              // 所以它排在带登录态的 GraphQL 之后当兜底。
+              function synToken(id) {
+                try {
+                  var t = ((Number(id) / 1e15) * Math.PI).toString(36).replace(/(0+|\.)/g, '');
+                  return t || 'x';
+                } catch (e) { return 'x'; }
+              }
+              function viaSyndication(id) {
+                var u = 'https://cdn.syndication.twimg.com/tweet-result?id=' + id + '&token=' + synToken(id);
+                return pageFetch(u, {credentials: 'omit'})
+                  .then(function(r){ return r && r.ok ? r.json() : null; })
+                  .then(function(j){
+                    var md = j && j.mediaDetails;
+                    if (!md || !md.length) return null;
+                    var obj = {media: md};
+                    remember(String(id), obj);
+                    return obj;
+                  })
+                  .catch(function(){ return null; });
+              }
+              function replyResolved(reqId, tweetId, obj, src) {
+                try {
+                  console.log('[XV] resolve ' + tweetId + ' -> ' + (obj ? src : 'none'));
+                  if (!window.XVerseNative) return;
+                  XVerseNative.call('tweetResolved', JSON.stringify({
+                    reqId: reqId,
+                    tweetId: tweetId,
+                    data: obj ? JSON.stringify(obj) : ''
+                  }));
+                } catch (e) {}
+              }
+              window.__xvResolveTweet = function(reqId, tweetId) {
+                var id = String(tweetId || '');
+                try {
+                  if (!/^\d+$/.test(id)) { replyResolved(reqId, id, null, 'bad-id'); return; }
+                  var hit = window.__xvMediaStore[id];
+                  if (hit) { replyResolved(reqId, id, hit, 'store'); return; }
+                  var src = 'restid';
+                  viaGql('TweetResultByRestId', 'tweetId', id)
+                    .then(function(r){
+                      if (r) return r;
+                      src = 'detail';
+                      return viaGql('TweetDetail', 'focalTweetId', id);
+                    })
+                    .then(function(r){
+                      if (r) return r;
+                      src = 'syndication';
+                      return viaSyndication(id);
+                    })
+                    .then(function(r){ replyResolved(reqId, id, r, src); })
+                    .catch(function(){ replyResolved(reqId, id, null, 'error'); });
+                } catch (e) { replyResolved(reqId, id, null, 'error'); }
+              };
 
               function onXhrDone(xhr) {
                 try {
@@ -1467,9 +1747,18 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
               function install() {
                 try {
                   var origFetch = window.fetch;
+                  // 留一份未被包装的 fetch：按需解析走它，避免自己的请求再绕回钩子
+                  if (origFetch && !nativeFetch) nativeFetch = origFetch.bind(window);
                   if (origFetch && !window.__xvFetchHooked) {
                     window.fetch = function(input, init) {
                       var u = typeof input === 'string' ? input : (input && input.url) || '';
+                      try {
+                        if (u && u.indexOf('/graphql/') >= 0) {
+                          noteGql(u);
+                          if (input && input.headers) noteHeaders(input.headers);
+                          if (init && init.headers) noteHeaders(init.headers);
+                        }
+                      } catch (e) {}
                       var p = origFetch.apply(this, arguments);
                       if (endpointTest.test(u)) {
                         p.then(function(res){
@@ -1489,6 +1778,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
                   if (origSend && !window.__xvXhrHooked) {
                     XMLHttpRequest.prototype.open = function(m, url) {
                       this.__xvUrl = url;
+                      try { if (url && String(url).indexOf('/graphql/') >= 0) noteGql(url); } catch (e) {}
                       return origOpen.apply(this, arguments);
                     };
                     XMLHttpRequest.prototype.send = function() {
@@ -1498,6 +1788,17 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
                       return origSend.apply(this, arguments);
                     };
                     window.__xvXhrHooked = true;
+                  }
+                  // 授权头只在 setRequestHeader 里出现，单独挂一层只读采集
+                  var origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+                  if (origSetHeader && !window.__xvHeaderHooked) {
+                    XMLHttpRequest.prototype.setRequestHeader = function(k, v) {
+                      try {
+                        if (this.__xvUrl && String(this.__xvUrl).indexOf('/graphql/') >= 0) noteHeader(k, v);
+                      } catch (e) {}
+                      return origSetHeader.apply(this, arguments);
+                    };
+                    window.__xvHeaderHooked = true;
                   }
                   installed = true;
                   console.log('[XV] graphql hook ok');

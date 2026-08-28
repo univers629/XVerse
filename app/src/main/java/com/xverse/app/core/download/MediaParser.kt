@@ -25,16 +25,35 @@ data class MediaItem(
 )
 
 /**
+ * 页面侧单帖解析器：由浏览器层实现，用 WebView 自己的会话按 tweetId 现取**这一条**推文的 JSON。
+ *
+ * 存在的原因：X 是 SPA，从时间线点进详情页 / 竖屏 mediaViewer 时经常复用前端内存缓存，
+ * 不再发新的 GraphQL 请求，被动拦截（[MediaParser.cacheFromGraphQL]）必然 miss，
+ * 于是「停留再久也解析不出媒体」。点下载的瞬间主动问页面要这一条即可立即命中。
+ *
+ * 约定：只解析被请求的那一条推文，不遍历时间线、不批量解析整页媒体。
+ */
+interface PageTweetResolver {
+    /** 返回该推文的 GraphQL 形状 JSON（`{legacy:…}` 或 `{media:[…]}`）；取不到返回 null */
+    suspend fun resolveTweet(tweetId: String): String?
+}
+
+/**
  * 推文媒体解析器。
  *
- * 双通道策略：
- *  1.（首选）页面自身 GraphQL 响应缓存 —— 注入 JS 拦截 `TweetDetail` 响应，
- *    经 Bridge `mediaResponse` 上报原生，从 `tweetResult` 的 `extended_entities` 直取直链。
- *    数据来自用户自己的登录会话，无需另行抓取。
- *  2.（兜底）直接解析推文页面内嵌 JSON 的 `extended_entities` / `video_info`
- *    （带登录 Cookie），提取直链；无 yt-dlp 二进制依赖，自包含。
+ * 逐级降级，全程只针对**一条**推文（不做整页/时间线批量解析）：
+ *  1. 页面自身 GraphQL 响应缓存 —— 注入 JS 拦截 `/graphql/` 响应，经 Bridge `mediaResponse`
+ *     上报原生，从 `tweetResult` 的 `extended_entities` 直取直链。数据来自用户登录会话。
+ *  2. [PageTweetResolver] —— 缓存未命中时，点下载的瞬间让页面按 tweetId 现取这一条
+ *     （页面上下文有登录态、可用网络，敏感/年龄限制帖也能拿到）。
+ *  3. syndication `tweet-result?id=` —— 原生侧按 id 查单帖，无需登录态。
+ *  4.（末位兜底）整页 HTML 内嵌 JSON 的 `extended_entities` / `video_info`。
  */
 class MediaParser(private val context: Context) {
+
+    /** 页面侧单帖解析器；由 BrowserViewModel 在 WebView 就绪时注入（无 WebView 时为 null）。 */
+    @Volatile
+    var pageResolver: PageTweetResolver? = null
 
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -80,6 +99,38 @@ class MediaParser(private val context: Context) {
             LogStore.log(LogCategory.DOWNLOAD, "Hit GraphQL cache ${cached.size} items (tweet $tweetId)")
             return@withContext cached
         }
+        // 通道二：向页面索取这一条推文（WebView 自己的登录会话 + 已验证可用的网络栈）。
+        // SPA 复用前端缓存时不会再发 GraphQL 请求，被动拦截必然 miss；这里主动问页面要**这一条**。
+        val resolver = pageResolver
+        if (tweetId.isNotBlank() && resolver != null) {
+            val fromPage = runCatching { resolver.resolveTweet(tweetId) }
+                .onFailure { LogStore.error("Page resolve failed (tweet $tweetId)", it) }
+                .getOrNull()
+            val items = if (fromPage.isNullOrBlank()) emptyList() else parseGraphQLMedia(fromPage)
+            if (items.isNotEmpty()) {
+                synchronized(cachedMedia) { cachedMedia[tweetId] = items }
+                LogStore.log(LogCategory.DOWNLOAD, "Page resolved ${items.size} media items (tweet $tweetId)")
+                return@withContext items
+            }
+            LogStore.log(LogCategory.DOWNLOAD, "Page resolve empty (tweet $tweetId)")
+        }
+        // 通道三：按 tweetId 单帖查询 syndication tweet-result。
+        // x.com 现在只回 SPA 外壳，整页 HTML 里已不再内嵌 extended_entities（实测 0 次命中），
+        // 所以缓存未命中时先走这条按 id 精确取单帖的接口：无需登录态、返回完整 mp4 档位（含 4K）。
+        if (tweetId.isNotBlank()) {
+            val fromSyndication = runCatching { fetchFromSyndication(tweetId) }
+                .onFailure { LogStore.error("Syndication lookup failed (tweet $tweetId)", it) }
+                .getOrDefault(emptyList())
+            if (fromSyndication.isNotEmpty()) {
+                synchronized(cachedMedia) { cachedMedia[tweetId] = fromSyndication }
+                LogStore.log(
+                    LogCategory.DOWNLOAD,
+                    "Syndication resolved ${fromSyndication.size} media items (tweet $tweetId)",
+                )
+                return@withContext fromSyndication
+            }
+        }
+        // 通道四（末位兜底）：整页 HTML 抓取。保留给以上通道都不覆盖的情形。
         try {
             val cookie = com.xverse.app.core.auth.CookieManagerReader.cookiesForFromBackground(norm)
             val html = fetch(norm, cookie)
@@ -94,6 +145,39 @@ class MediaParser(private val context: Context) {
             LogStore.error("Exception parsing tweet media", e)
             emptyList()
         }
+    }
+
+    /**
+     * 按推文 id 精确解析单帖媒体（syndication tweet-result）。
+     *
+     * 只查这一条推文，不遍历时间线、不批量抓取：响应里的 `mediaDetails` 就是该帖
+     * 自己的媒体数组，字段形状与 GraphQL 的 `extended_entities.media` 一致
+     * （type / media_url_https / original_info / video_info.variants），可直接复用
+     * [parseMediaArray]。
+     *
+     * 注意 `video.variants` 是另一套形状（type/src，且无 bitrate），不能用——
+     * X-Vault 1.4.9 正是误取了它，导致 `.url` 为 undefined 抛错、这条兜底整体失效。
+     */
+    private fun fetchFromSyndication(tweetId: String): List<MediaItem> {
+        val url = "$SYNDICATION_ENDPOINT?id=$tweetId&token=${syndicationToken(tweetId)}"
+        val req = Request.Builder()
+            .url(url)
+            .header("User-Agent", CHROME_MOBILE_UA)
+            .header("Accept", "application/json")
+            .build()
+        val body = client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                LogStore.log(LogCategory.DOWNLOAD, "Syndication HTTP ${resp.code} (tweet $tweetId)")
+                return emptyList()
+            }
+            resp.body.string()
+        }
+        if (body.isBlank()) return emptyList()
+        val root = JSONObject(body)
+        val details = root.optJSONArray("mediaDetails") ?: return emptyList()
+        val out = mutableListOf<MediaItem>()
+        parseMediaArray(details, out)
+        return out.distinctBy { it.url }
     }
 
     /** 从 GraphQL TweetDetail 响应提取媒体：只取主推文的媒体数组（递归找第一个带 media[] 的对象即止） */
@@ -112,7 +196,9 @@ class MediaParser(private val context: Context) {
         val media = obj.optJSONArray("media")
         if (media != null && out.size < 12) {
             parseMediaArray(media, out)
-            return
+            // 只有真的取到媒体才收敛：首个 media[] 若是纯 HLS 直播等取不出直链的情形，
+            // 继续往下走，否则整帖会被判成「无媒体」。
+            if (out.isNotEmpty()) return
         }
         // 递归遍历嵌套键
         val keys = obj.keys()
@@ -273,21 +359,31 @@ class MediaParser(private val context: Context) {
                 type == "video" || type == "animated_gif" -> {
                     val videoInfo = m.optJSONObject("video_info") ?: continue
                     val variants = videoInfo.optJSONArray("variants") ?: continue
-                    // 选 MP4（排除 m3u8）
-                    var best: JSONObject? = null
-                    var bestBitrate = -1
+                    // 选 MP4（排除 m3u8）；mp4 变体的类型键在 GraphQL 是 content_type，syndication 的
+                    // video.variants 用 type；两个都认，URL 键同理（url / src）。
+                    val mp4s = mutableListOf<JSONObject>()
                     for (j in 0 until variants.length()) {
                         val v = variants.optJSONObject(j) ?: continue
-                        if (v.optString("content_type") == "video/mp4") {
-                            val bitrate = v.optInt("bitrate", 0)
-                            if (bitrate > bestBitrate) {
-                                bestBitrate = bitrate
-                                best = v
-                            }
+                        val contentType = v.optString("content_type").ifEmpty { v.optString("type") }
+                        if (contentType == "video/mp4") mp4s.add(v)
+                    }
+                    var best: JSONObject? = null
+                    var bestBitrate = -1
+                    for (v in mp4s) {
+                        val bitrate = v.optInt("bitrate", 0)
+                        if (bitrate > bestBitrate) {
+                            bestBitrate = bitrate
+                            best = v
                         }
                     }
+                    // 部分响应的 mp4 变体不带 bitrate（全为 0），按 bitrate 排会稳定命中
+                    // 第一档 480x270；这时改用 URL 里编码的分辨率挑最高档。
+                    if (bestBitrate <= 0 && mp4s.isNotEmpty()) {
+                        best = mp4s.maxByOrNull { pixelsOf(variantUrl(it)) } ?: mp4s.first()
+                        bestBitrate = 0
+                    }
                     if (best != null) {
-                        val url = best.optString("url")
+                        val url = variantUrl(best)
                         // 分辨率优先取 media 对象 original_info（视频/GIF 均有真实宽高），
                         // 比 URL 内编码更可靠：新版 x.com 部分视频与 tweet_video(GIF) URL
                         // 不含 /vid/…/WxH/ 段（旧逻辑会兜底成 2176k / gif，用户不可读）。
@@ -378,5 +474,86 @@ class MediaParser(private val context: Context) {
         private const val CHROME_MOBILE_UA =
             "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/128.0.6613.99 Mobile Safari/537.36"
+        private const val SYNDICATION_ENDPOINT = "https://cdn.syndication.twimg.com/tweet-result"
+        private const val RADIX36_DIGITS = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+        /** 变体直链：GraphQL/syndication.mediaDetails 用 url，syndication.video 用 src。 */
+        internal fun variantUrl(variant: JSONObject): String =
+            variant.optString("url").ifEmpty { variant.optString("src") }
+
+        /** 从 video.twimg.com 直链里的 /<W>x<H>/ 段取像素数，取不到记 0。 */
+        internal fun pixelsOf(url: String): Long {
+            val m = Regex("/(\\d+)x(\\d+)/").find(url) ?: return 0
+            return m.groupValues[1].toLong() * m.groupValues[2].toLong()
+        }
+
+        /**
+         * syndication tweet-result 的 token（对齐 X 前端算法）：
+         * `((id / 1e15) * Math.PI).toString(36).replace(/(0+|\.)/g, '')`。
+         *
+         * 当前服务端并不校验（token=x 也返回 200），这里按官方算法生成只是防它日后收紧。
+         */
+        internal fun syndicationToken(tweetId: String): String {
+            val id = tweetId.toDoubleOrNull() ?: return "x"
+            val token = jsRadix36(id / 1e15 * Math.PI).replace(Regex("(0+|\\.)"), "")
+            return token.ifEmpty { "x" }
+        }
+
+        /**
+         * 复刻 JS `Number.prototype.toString(36)`（V8 DoubleToRadixCString）。
+         * 直接十进制转换会和 JS 结果不一致，token 就对不上，所以照搬其定点算法。
+         */
+        internal fun jsRadix36(value: Double): String {
+            if (!value.isFinite()) return "0"
+            val radix = 36
+            var integer = Math.floor(value)
+            var fraction = value - integer
+            var delta = 0.5 * (Math.nextUp(value) - value)
+            if (delta < Double.MIN_VALUE) delta = Double.MIN_VALUE
+            val fractionPart = StringBuilder()
+            if (fraction >= delta) {
+                while (true) {
+                    fraction *= radix
+                    delta *= radix
+                    var digit = fraction.toInt()
+                    fractionPart.append(RADIX36_DIGITS[digit])
+                    fraction -= digit
+                    if (fraction > 0.5 || (fraction == 0.5 && (digit and 1) == 1)) {
+                        if (fraction + delta > 1) {
+                            // 进位：从末位往前找可加 1 的位，全部溢出则整数部分 +1
+                            var cursor = fractionPart.length
+                            while (true) {
+                                cursor--
+                                if (cursor < 0) {
+                                    integer += 1
+                                    break
+                                }
+                                digit = RADIX36_DIGITS.indexOf(fractionPart[cursor])
+                                if (digit + 1 < radix) {
+                                    fractionPart.setCharAt(cursor, RADIX36_DIGITS[digit + 1])
+                                    cursor++
+                                    break
+                                }
+                            }
+                            fractionPart.setLength(maxOf(cursor, 0))
+                            break
+                        }
+                    }
+                    if (fraction < delta) break
+                }
+            }
+            val integerPart = StringBuilder()
+            do {
+                val remainder = integer % radix
+                integerPart.append(RADIX36_DIGITS[remainder.toInt()])
+                integer = (integer - remainder) / radix
+            } while (integer > 0)
+            integerPart.reverse()
+            return if (fractionPart.isEmpty()) {
+                integerPart.toString()
+            } else {
+                "$integerPart.$fractionPart"
+            }
+        }
     }
 }
