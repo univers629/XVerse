@@ -366,7 +366,7 @@ fun MainScreen(mainViewModel: MainViewModel, systemUiMode: Int? = null) {
                                 .zIndex(if (selectedTab == XTab.HOME) 1f else 0f)
                                 .alpha(homeAlpha),
                             active = selectedTab == XTab.HOME || homeContentActive,
-                            darkTheme = darkTheme,
+                            darkTheme,
                         )
                     }
                     // 其余页：非活动时 AnimatedVisibility 自动回收；选中 fade+scale 进场
