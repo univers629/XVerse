@@ -69,6 +69,10 @@ class MainActivity : ComponentActivity() {
 
     private val mainViewModel: MainViewModel by viewModels { MainViewModel.Factory }
 
+    // uiMode is handled by this Activity (see AndroidManifest), so expose its latest value
+    // as Compose state to make "follow system" react without recreating the WebView.
+    private var systemUiMode by mutableIntStateOf(0)
+
     // 下载完成/前台通知需要运行时授权（Android 13+）
     private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -87,6 +91,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        updateSystemUiMode()
         val lang = com.xverse.app.core.data.repo.SettingsRepo.getSavedAppLanguage(this)
         val targetLocale = com.xverse.app.core.util.LocaleUtils.getLocale(lang)
         newConfig.setLocale(targetLocale)
@@ -95,12 +100,34 @@ class MainActivity : ComponentActivity() {
         com.xverse.app.core.util.LocaleUtils.applyLocale(this, lang)
     }
 
+    /**
+     * 部分系统的快捷控制栏切换夜间模式时不会立即重新创建 Activity，
+     * 甚至可能只在窗口重新获得焦点后才完成资源配置更新；重新聚焦时再取一次
+     * 当前配置，确保“跟随系统”不会停留在切换前的颜色模式。
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            updateSystemUiMode()
+            // MIUI may publish the updated Resources configuration one frame after focus returns.
+            window.decorView.post { if (!isFinishing) updateSystemUiMode() }
+        }
+    }
+
+    private fun updateSystemUiMode() {
+        // The Activity handles uiMode in configChanges, so its Resources configuration can
+        // remain stale after a system-bar toggle. System resources expose the current value.
+        val mode = android.content.res.Resources.getSystem().configuration.uiMode
+        if (systemUiMode != mode) systemUiMode = mode
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         val lang = com.xverse.app.core.data.repo.SettingsRepo.getSavedAppLanguage(this)
         com.xverse.app.core.util.LocaleUtils.applyLocale(this, lang)
         (application as? XVerseApp)?.updateAppLocale(lang)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        updateSystemUiMode()
         // 请求通知权限（仅 33+ 需要）
         if (Build.VERSION.SDK_INT >= 33) {
             val granted = checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
@@ -110,7 +137,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         setContent {
-            MainScreen(mainViewModel)
+            MainScreen(mainViewModel, systemUiMode)
         }
         // 深链：首次启动携带 VIEW intent（如外部点击 x.com 链接）
         handleViewIntent(intent)
@@ -172,14 +199,17 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun MainScreen(mainViewModel: MainViewModel) {
+fun MainScreen(mainViewModel: MainViewModel, systemUiMode: Int? = null) {
     val themeMode by mainViewModel.themeMode.collectAsState(initial = "system")
     val appLanguage by mainViewModel.appLanguage.collectAsState(initial = "system")
     val customMonetEnabled by mainViewModel.customMonetEnabled.collectAsState(initial = false)
     val customMonetColor by mainViewModel.customMonetColor.collectAsState(
         initial = com.xverse.app.core.data.repo.SettingsRepo.DEFAULT_MONET_COLOR_ARGB,
     )
-    val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val systemDark = systemUiMode?.let { uiMode ->
+        (uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+    } ?: androidx.compose.foundation.isSystemInDarkTheme()
     val darkTheme = when (themeMode) {
         "dark" -> true
         "light" -> false
@@ -336,6 +366,7 @@ fun MainScreen(mainViewModel: MainViewModel) {
                                 .zIndex(if (selectedTab == XTab.HOME) 1f else 0f)
                                 .alpha(homeAlpha),
                             active = selectedTab == XTab.HOME || homeContentActive,
+                            darkTheme = darkTheme,
                         )
                     }
                     // 其余页：非活动时 AnimatedVisibility 自动回收；选中 fade+scale 进场
@@ -407,4 +438,3 @@ private fun BadgedIcon(tab: XTab, selected: Boolean) {
         contentDescription = androidx.compose.ui.res.stringResource(tab.labelRes),
     )
 }
-

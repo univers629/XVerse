@@ -26,6 +26,16 @@ import com.xverse.app.core.util.Constants
 @SuppressLint("SetJavaScriptEnabled")
 class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context, attrs) {
 
+    private val viewportRepair = Runnable {
+        if (!isAttachedToWindow || url.isNullOrBlank() || url == "about:blank") return@Runnable
+        evaluateJavascript(VIEWPORT_STALE_PROBE) { result ->
+            if (result != "true" || !isAttachedToWindow) return@evaluateJavascript
+            LogStore.log(LogCategory.WEBVIEW, "Reloading page to repair stale viewport after resize")
+            injector.prepareForNavigation()
+            reload()
+        }
+    }
+
     /** 页面加载完成回调 */
     var onPageFinished: ((String) -> Unit)? = null
 
@@ -152,7 +162,66 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
         )
     }
 
+    /**
+     * 同步 X 网页主题。X 在启动时读取 night_mode Cookie 创建 React 调色板，
+     * 因此 Cookie 变化后调用方需要重载当前页面。
+     */
+    @Suppress("DEPRECATION")
+    fun setDarkTheme(dark: Boolean, onApplied: (cookieChanged: Boolean) -> Unit) {
+        val mode = if (dark) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
+        runCatching {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+                WebSettingsCompat.setForceDark(settings, mode)
+            }
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+                WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, dark)
+            }
+        }.onFailure { e ->
+            LogStore.log(LogCategory.WEBVIEW, "Set WebView color mode failed: ${e.message}")
+        }
+
+        val cookieManager = CookieManager.getInstance()
+        val cookieValue = if (dark) "2" else "0"
+        val targets = listOf(
+            "https://x.com" to ".x.com",
+            "https://twitter.com" to ".twitter.com",
+        ).filter { (url, _) ->
+            readCookie(cookieManager.getCookie(url), "night_mode") != cookieValue
+        }
+        if (targets.isEmpty()) {
+            onApplied(false)
+            return
+        }
+
+        var remaining = targets.size
+        targets.forEach { (url, domain) ->
+            cookieManager.setCookie(
+                url,
+                "night_mode=$cookieValue; Domain=$domain; Path=/; Max-Age=31536000; Secure; SameSite=Lax",
+            ) {
+                remaining -= 1
+                if (remaining == 0) {
+                    cookieManager.flush()
+                    onApplied(true)
+                }
+            }
+        }
+    }
+
+    /**
+     * Some WebView builds retain the landscape visual viewport after returning to portrait.
+     * Wait for the Android view to finish resizing, then reload only when Chromium still
+     * reports a clipped or offset viewport and no editable element owns focus.
+     */
+    fun repairViewportAfterResize() {
+        removeCallbacks(viewportRepair)
+        requestLayout()
+        postInvalidateOnAnimation()
+        postDelayed(viewportRepair, VIEWPORT_REPAIR_DELAY_MS)
+    }
+
     override fun destroy() {
+        removeCallbacks(viewportRepair)
         setAdNetworkBlocking(false)
         injector.clear()
         stopLoading()
@@ -169,6 +238,27 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
     }
 
     companion object {
+        private const val VIEWPORT_REPAIR_DELAY_MS = 300L
+        private val VIEWPORT_STALE_PROBE = """
+            (function() {
+              var vv = window.visualViewport;
+              if (!vv) return false;
+              var active = document.activeElement;
+              var editing = active && (
+                /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName) || active.isContentEditable
+              );
+              if (editing) return false;
+              var layoutHeight = Math.max(
+                window.innerHeight || 0,
+                document.documentElement ? document.documentElement.clientHeight : 0
+              );
+              if (!layoutHeight) return false;
+              var clipped = layoutHeight - vv.height > Math.max(48, layoutHeight * 0.2);
+              var offset = Math.abs(vv.offsetTop || 0) > 48;
+              return clipped || offset;
+            })()
+        """.trimIndent()
+
         @Volatile
         private var serviceWorkerBlockerInstalled = false
 
@@ -186,5 +276,12 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
                 LogStore.log(LogCategory.FILTER, "Service Worker ad request blocker installed")
             }
         }
+
+        private fun readCookie(cookies: String?, name: String): String? = cookies
+            ?.split(';')
+            ?.asSequence()
+            ?.map { it.trim() }
+            ?.firstOrNull { it.substringBefore('=', missingDelimiterValue = "") == name }
+            ?.substringAfter('=', missingDelimiterValue = "")
     }
 }

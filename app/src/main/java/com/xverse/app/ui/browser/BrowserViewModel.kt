@@ -64,6 +64,8 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
     private var filterRulesJob: Job? = null
     private var appearanceSettingsJob: Job? = null
     private var extensionWatchJob: Job? = null
+    private var webThemeJob: Job? = null
+    private var desiredWebDarkTheme: Boolean? = null
     private var initialized = false
     private var legacyHistoryCleanupStarted = false
 
@@ -100,6 +102,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
             // 过滤组件初始注册须在首导航前完成，否则内置 strip/CSS 对首屏 SPA 无效
             loadFilterScripts(wv)
             loadAppearanceScript(wv)
+            applyWebTheme(wv, desiredWebDarkTheme ?: false)
             // 扩展注入提供者首帧注册须在首导航前完成，否则 document_start 组内容脚本错过首屏
             loadExtensions(wv)
             if (webView !== wv) return@launch
@@ -154,6 +157,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
         rebuildJob = viewModelScope.launch {
             loadFilterScripts(wv)
             loadAppearanceScript(wv)
+            applyWebTheme(wv, desiredWebDarkTheme ?: false)
             loadExtensions(wv)
             if (webView !== wv) return@launch
             wv.injector.prepareForNavigation()
@@ -461,6 +465,40 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
     private suspend fun loadAppearanceScript(view: XWebView) {
         applyAppearanceScript(view, locator.settings.hideXBottomBar.first(), updateCurrentPage = false)
     }
+
+    /** 应用当前 Compose 主题到 X；已加载页面在 Cookie 更新后重载一次。 */
+    fun setWebDarkTheme(dark: Boolean) {
+        val changed = desiredWebDarkTheme != dark
+        desiredWebDarkTheme = dark
+        val wv = webView ?: return
+        if (!changed || !initialized) return
+        webThemeJob?.cancel()
+        webThemeJob = viewModelScope.launch {
+            val cookieChanged = applyWebTheme(wv, dark)
+            if (cookieChanged && webView === wv && desiredWebDarkTheme == dark) {
+                wv.injector.prepareForNavigation()
+                wv.reload()
+            }
+        }
+    }
+
+    /** Repair Chromium's visual viewport after an orientation or window-size change. */
+    fun repairWebViewportAfterResize() {
+        val wv = webView ?: return
+        viewModelScope.launch {
+            val hidden = locator.settings.hideXBottomBar.first()
+            if (webView !== wv) return@launch
+            applyAppearanceScript(wv, hidden, updateCurrentPage = initialized)
+            wv.repairViewportAfterResize()
+        }
+    }
+
+    private suspend fun applyWebTheme(view: XWebView, dark: Boolean): Boolean =
+        suspendCancellableCoroutine { continuation ->
+            view.setDarkTheme(dark) { cookieChanged ->
+                if (continuation.isActive) continuation.resume(cookieChanged)
+            }
+        }
 
     private fun applyAppearanceScript(view: XWebView, hidden: Boolean, updateCurrentPage: Boolean) {
         val script = WebAppearanceScript.hideXBottomBar(hidden)
@@ -811,6 +849,7 @@ class BrowserViewModel(private val locator: ServiceLocator) : ViewModel() {
         filterRulesJob?.cancel()
         appearanceSettingsJob?.cancel()
         extensionWatchJob?.cancel()
+        webThemeJob?.cancel()
         locator.mediaParser.pageResolver = null
         pendingTweetResolves.values.forEach { it.complete("") }
         pendingTweetResolves.clear()

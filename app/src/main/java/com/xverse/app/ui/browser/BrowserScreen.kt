@@ -80,6 +80,7 @@ fun BrowserScreen(
     mainViewModel: com.xverse.app.MainViewModel,
     modifier: Modifier = Modifier,
     active: Boolean = true,
+    darkTheme: Boolean = false,
 ) {
     val viewModel: BrowserViewModel = viewModel(factory = BrowserViewModel.Factory)
     val progress by viewModel.progress.collectAsStateWithLifecycle()
@@ -88,9 +89,18 @@ fun BrowserScreen(
     val searchFavorites by viewModel.searchFavorites.collectAsStateWithLifecycle()
     var searchExpanded by remember { mutableStateOf(false) }
     var searchState by remember { mutableStateOf(XSearchFilterState()) }
+    val configuration = LocalConfiguration.current
+    val viewportSize = configuration.screenWidthDp to configuration.screenHeightDp
+    var previousViewportSize by remember { mutableStateOf(viewportSize) }
 
     LaunchedEffect(active) {
         if (!active) searchExpanded = false
+    }
+
+    LaunchedEffect(viewportSize) {
+        val changed = previousViewportSize != viewportSize
+        previousViewportSize = viewportSize
+        if (changed) viewModel.repairWebViewportAfterResize()
     }
 
     // 处理浏览器命令（跨 Tab 深链 / 首页）
@@ -148,6 +158,7 @@ fun BrowserScreen(
                         }
                     })
                     viewModel.onWebViewReady(wv)
+                    viewModel.setWebDarkTheme(darkTheme)
                     // 首次加载：挂起深链或首页
                     viewModel.loadInitial()
                     wv
@@ -155,6 +166,7 @@ fun BrowserScreen(
                 update = { wv ->
                     // 非活动 Tab：GONE 隐藏（保状态），活动恢复 VISIBLE
                     wv.visibility = if (active) android.view.View.VISIBLE else android.view.View.GONE
+                    viewModel.setWebDarkTheme(darkTheme)
                 },
                 // Activity 销毁 / HOME tab 解组时释放 WebView，避免 native 资源泄漏
                 onRelease = {
