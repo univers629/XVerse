@@ -69,3 +69,17 @@ xvtest.crx
 
 # 本地参考源码/压缩包，不属于应用源码或发布产物
 /references/
+
+# 本地分发目录：编译出来的 APK 只用于本机安装验证，不入库
+# （*.apk 已在上文忽略，这里连 output-metadata.json、*.idsig 等一起挡掉）
+/dist/
+*.idsig
+
+# 本地构建工具链：JDK / Android SDK / qemu / aapt2 启动器等体积很大，
+# 默认放在仓库外（见 BUILD-NOTES-aarch64.md）；若图省事放进仓库，这里兜底
+/toolchain/
+/.toolchain/
+/android-sdk/
+
+# 本机（aarch64 容器）构建笔记，含本机绝对路径，仅作本地参考
+BUILD-NOTES-aarch64.md

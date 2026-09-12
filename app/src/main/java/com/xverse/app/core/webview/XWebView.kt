@@ -36,6 +36,14 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
         }
     }
 
+    /** 站点状态迁移第二趟（SW/缓存/IndexedDB）注入完成后，重载一次让客户端干净重新拉取。 */
+    private val purgeReload = Runnable {
+        if (!isAttachedToWindow) return@Runnable
+        LogStore.log(LogCategory.WEBVIEW, "Site state purge: reloading once for clean client fetch")
+        injector.prepareForNavigation()
+        reload()
+    }
+
     /** 页面加载完成回调 */
     var onPageFinished: ((String) -> Unit)? = null
 
@@ -61,9 +69,27 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
         s.setSupportZoom(false)
         s.builtInZoomControls = false
         s.cacheMode = WebSettings.LOAD_DEFAULT
-        // 使用 WebView 真机默认 UA（含真实 Android 版本/设备型号），不硬编码假 UA。
-        // 历史教训：硬编码 "Android 10; K" 曾用于伪装 Chrome 移动版，反而可能被
-        // x.com 按旧设备路径渲染；真机 UA 与系统 WebView 一致，兼容性最好。
+        // UA：系统 WebView 默认 UA 带三处「这是 WebView」的特征 —— `; wv`、`Version/4.0 `、
+        // `Build/xxx`，部分站点（含 x.com 的聊天端点）会据此走降级或拒绝路径。
+        // 这里只从系统默认 UA 派生、只做减法：删掉这三处特征，保留真实的 Android 版本、
+        // 设备型号与 Chrome 版本，不硬编码、不伪装成桌面 UA。
+        // 历史教训：曾硬编码 "Android 10; K" 冒充 Chrome 移动版，被 x.com 按旧设备路径渲染，
+        // 所以一律以系统默认 UA 为基准。CHROME_LIKE_UA=false 即完全恢复原行为。
+        //
+        // 实测（2026-09-11，真机 Android WebView，XVerse 0.7.0）：
+        //   改前：点底部栏聊天图标 → "there was an issue loading all of your messages"
+        //         + 反复弹 disconnected，且不会出现 E2EE PIN 页；
+        //   改后：直接弹出端到端加密 PIN 页，输入 PIN 后会话列表正常加载、消息可收发。
+        // 即 x.com 是依据 UA 中的 `wv` 标记识别 WebView 并降级/拒绝 XChat（E2EE）客户端的，
+        // 与 TLS、crypto.subtle、WASM 或 XVerse 自身的注入/过滤都无关。
+        if (CHROME_LIKE_UA) {
+            val ua = chromeLikeUserAgent(s.userAgentString)
+            s.userAgentString = ua
+            LogStore.log(LogCategory.WEBVIEW, "User agent: $ua")
+            // UA 修正后的首次启动：清掉带 `wv` 时期缓存的站点状态，否则覆盖升级的用户
+            // 仍会被旧缓存喂回降级客户端（Cookie 不动，无需重新登录）。见 WebViewStateMigration。
+            WebViewStateMigration.beforeFirstLoad(context, this)
+        }
         s.setSupportMultipleWindows(false)
         s.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
         // 媒体自动播放：允许无用户手势播放（竖屏刷视频模式需要）。
@@ -124,11 +150,32 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
                 super.onPageFinished(view, url)
                 LogStore.log(LogCategory.WEBVIEW, "Page finished: $url")
                 injector.onPageFinished(url)
+                // 一次性站点状态迁移第二趟：SW/CacheStorage/IndexedDB 清完后重载一页。
+                if (WebViewStateMigration.afterFirstLoad(context, view, url)) {
+                    postDelayed(purgeReload, PURGE_RELOAD_DELAY_MS)
+                }
                 onPageFinished?.invoke(url)
             }
         }
 
         // 进度回调走 webChromeClient
+    }
+
+    /**
+     * 把 WebView 默认 UA 收敛成等价的 Chrome for Android UA（只做减法，幂等）：
+     *   Mozilla/5.0 (Linux; Android 14; Pixel 7 Build/UQ1A.240105.004; wv) AppleWebKit/537.36
+     *     (KHTML, like Gecko) Version/4.0 Chrome/140.0.0.0 Mobile Safari/537.36
+     *   → Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36
+     *     (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36
+     * 删除的三处都是 WebView 独有的标记，不改变设备型号 / Android 版本 / Chrome 版本。
+     * 默认 UA 读取失败时回退系统默认值，不抛异常。
+     */
+    private fun chromeLikeUserAgent(ua: String?): String {
+        val base = ua?.takeIf { it.isNotBlank() } ?: WebSettings.getDefaultUserAgent(context)
+        return base
+            .replace("; wv", "")
+            .replace(BUILD_TOKEN, "")
+            .replace("Version/4.0 ", "")
     }
 
     /** 提供给外部的 WebChromeClient 设置 */
@@ -222,6 +269,7 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
 
     override fun destroy() {
         removeCallbacks(viewportRepair)
+        removeCallbacks(purgeReload)
         setAdNetworkBlocking(false)
         injector.clear()
         stopLoading()
@@ -239,6 +287,9 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
 
     companion object {
         private const val VIEWPORT_REPAIR_DELAY_MS = 300L
+
+        /** 站点状态迁移第二趟注入后，等 SW 注销/缓存删除落地再重载。 */
+        private const val PURGE_RELOAD_DELAY_MS = 2500L
         private val VIEWPORT_STALE_PROBE = """
             (function() {
               var vv = window.visualViewport;
@@ -283,5 +334,11 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
             ?.map { it.trim() }
             ?.firstOrNull { it.substringBefore('=', missingDelimiterValue = "") == name }
             ?.substringAfter('=', missingDelimiterValue = "")
+
+        /** UA 修正总开关：false 时完全使用系统默认 WebView UA（含 `; wv`）。 */
+        private const val CHROME_LIKE_UA = true
+
+        /** WebView 默认 UA 里的构建号片段，如 ` Build/UQ1A.240105.004`。 */
+        private val BUILD_TOKEN = Regex("""\s+Build/[^;)\s]+""")
     }
 }
