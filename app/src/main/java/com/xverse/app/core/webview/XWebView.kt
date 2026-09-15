@@ -53,6 +53,11 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
     /** 脚本注入器（页面事件自动驱动） */
     val injector: JsInjector by lazy { JsInjector(this) }
 
+    /** 网页全屏宿主（由外部 WebChromeClient 回调驱动，见 BrowserScreen） */
+    val fullscreen: FullscreenVideoHost by lazy(LazyThreadSafetyMode.NONE) {
+        FullscreenVideoHost(this)
+    }
+
     init {
         configure()
         LogStore.log(LogCategory.WEBVIEW, "XWebView initialized, WebView version: ${WebView.getCurrentWebViewPackage()?.versionName ?: "Unknown"}")
@@ -261,6 +266,8 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
      * reports a clipped or offset viewport and no editable element owns focus.
      */
     fun repairViewportAfterResize() {
+        // 全屏播放中不做视口自检，避免重载打断视频
+        if (fullscreen.isActive) return
         removeCallbacks(viewportRepair)
         requestLayout()
         postInvalidateOnAnimation()
@@ -268,6 +275,8 @@ class XWebView(context: Context, attrs: AttributeSet? = null) : WebView(context,
     }
 
     override fun destroy() {
+        // 全屏容器挂在 DecorView 上，先摘掉
+        fullscreen.release()
         removeCallbacks(viewportRepair)
         removeCallbacks(purgeReload)
         setAdNetworkBlocking(false)

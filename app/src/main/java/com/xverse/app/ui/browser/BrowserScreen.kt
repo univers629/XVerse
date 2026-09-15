@@ -156,6 +156,18 @@ fun BrowserScreen(
                             )
                             return true
                         }
+
+                        // 网页全屏：WebView 只把视频视图交出来，挂载由 FullscreenVideoHost 负责
+                        override fun onShowCustomView(
+                            view: android.view.View,
+                            callback: WebChromeClient.CustomViewCallback,
+                        ) {
+                            wv.fullscreen.onShowCustomView(view, callback)
+                        }
+
+                        override fun onHideCustomView() {
+                            wv.fullscreen.onHideCustomView()
+                        }
                     })
                     viewModel.onWebViewReady(wv)
                     viewModel.setWebDarkTheme(darkTheme)
@@ -170,6 +182,7 @@ fun BrowserScreen(
                 },
                 // Activity 销毁 / HOME tab 解组时释放 WebView，避免 native 资源泄漏
                 onRelease = {
+                    it.fullscreen.release()
                     viewModel.onWebViewReleased(it)
                     it.destroy()
                 },
